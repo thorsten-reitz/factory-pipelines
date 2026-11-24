@@ -24,6 +24,8 @@ echo "::group::S3 und Argo CD"
 docker run -d --name s3 --network k3d-e2e chrislusf/seaweedfs:4.50 server -dir=/data -s3 -s3.port=8333 -master.volumeSizeLimitMB=256 >/dev/null
 S3_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' s3)
 echo "S3 im Cluster-Netz: $S3_IP"
+for _ in $(seq 1 60); do curl -s -o /dev/null --max-time 2 "http://$S3_IP:8333/" && break; sleep 2; done
+curl -s -o /dev/null -w "S3 vom Runner aus: HTTP %{http_code}\n" --max-time 5 "http://$S3_IP:8333/" || echo "S3 vom Runner aus nicht erreichbar"
 helm repo add argo https://argoproj.github.io/argo-helm >/dev/null
 helm install argo-cd argo/argo-cd --version 10.17.0 -n argocd --create-namespace --wait --timeout 10m \
   --set dex.enabled=false --set notifications.enabled=false --set-string 'configs.cm.timeout\.reconciliation=15s' >/dev/null
@@ -64,6 +66,10 @@ spec:
     automated: { prune: true, selfHeal: true }
     retry: { limit: 20, backoff: { duration: 10s, factor: 1, maxDuration: 10s } }
 YAML
+echo "Erreichbarkeit von S3 aus einem Pod:"
+kubectl -n "$NS" run s3check --rm -i --restart=Never --image=curlimages/curl:8.11.1 -- \
+  curl -sS -m 10 -o /dev/null -w 'HTTP %{http_code}\n' "http://$S3_IP:8333/" \
+  || { echo "::error::S3 ist aus dem Cluster nicht erreichbar"; exit 1; }
 echo "::endgroup::"
 
 {

@@ -37,6 +37,7 @@ url_of() { eval "printf '%s' \"\${$1:-}\""; }
 pg_path() { echo "/postgres/$1.dump"; }
 
 ensure_repo() {
+  log "Prüfe restic-Repository $(printf '%s' "$RESTIC_REPOSITORY" | sed -E 's#//[^@/]*@#//#')"
   restic cat config >/dev/null 2>&1 && return 0
   log "restic-Repository anlegen: $RESTIC_REPOSITORY"
   restic init >/dev/null

@@ -45,7 +45,7 @@ case "$1" in
   job)
     name="$2-now-$(date +%s)"
     k create job "$name" --from="cronjob/$2"
-    if ! k wait --for=condition=complete "job/$name" --timeout=300s; then k logs "job/$name" || true; exit 1; fi
+    if ! k wait --for=condition=complete "job/$name" --timeout=300s; then k describe pod -l "job-name=$name" | tail -25 || true; k logs "job/$name" || true; exit 1; fi
     k logs "job/$name" | tail -5
     ;;
   *) echo "Unbekannt: $1" >&2; exit 2 ;;

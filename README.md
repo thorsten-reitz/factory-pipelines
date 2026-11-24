@@ -2,7 +2,7 @@
 
 Wiederverwendbare CI/CD-Workflows, Host-Skripte und Vorlagen für Projekte der [Software Factory](https://github.com/thorsten-reitz/software-factory). Umsetzung der Betriebskonventionen aus [`docs/proposals/betriebskonventionen.md`](https://github.com/thorsten-reitz/software-factory/blob/main/docs/proposals/betriebskonventionen.md).
 
-> **Version 0.2:** Stufen **compose** (Docker Compose + Caddy auf einer VM) und **kamal** (dasselbe ohne Unterbrechung beim Deploy, über kamal-proxy). k3s folgt in 0.3.
+> **Version 0.3:** Stufen **compose** (Docker Compose + Caddy auf einer VM), **kamal** (dasselbe ohne Unterbrechung beim Deploy, über kamal-proxy) und **k3s** (Helm-Chart, ausgerollt von Argo CD über den Branch `factory-deploy`).
 
 ## Was ein Projekt davon hat
 
@@ -55,11 +55,33 @@ Der SSH-Schlüssel kann nur `deploy`, `rollback`, `restore` und `status` auslös
 |---|---|---|
 | `compose` | `docker compose up`, der App-Container startet neu | wenige Sekunden |
 | `kamal` | neuer App-Container neben dem alten; [kamal-proxy](https://github.com/basecamp/kamal-proxy) leitet den Verkehr erst um, wenn `/readyz` grün ist, und wartet, bis der alte Container keine Anfragen mehr hat | keine |
-| `k3s` | folgt in 0.3 | – |
+| `k3s` | Rolling Update in Kubernetes: neue Pods bekommen erst Verkehr, wenn `/readyz` grün ist; ausgerollt von Argo CD | keine |
 
-Beide Stufen nutzen dieselbe `deploy/compose.yml`. In der Stufe `kamal` startet `factory-host` den Dienst `app` nicht mit `docker compose up`, sondern als eigenen Container pro Release; davor läuft je App und Umgebung ein kleiner kamal-proxy auf `127.0.0.1:<port>`. Caddy, Port, Health-Gate, Secrets, Backup und Seed sind identisch. Der Wechsel von `compose` zu `kamal` ist eine Zeile in `.factory/delivery.json`; beim ersten Deploy danach gibt es einmal eine kurze Unterbrechung.
+Die Stufen `compose` und `kamal` nutzen dieselbe `deploy/compose.yml`. In der Stufe `kamal` startet `factory-host` den Dienst `app` nicht mit `docker compose up`, sondern als eigenen Container pro Release; davor läuft je App und Umgebung ein kleiner kamal-proxy auf `127.0.0.1:<port>`. Caddy, Port, Health-Gate, Secrets, Backup und Seed sind identisch. Der Wechsel von `compose` zu `kamal` ist eine Zeile in `.factory/delivery.json`; beim ersten Deploy danach gibt es einmal eine kurze Unterbrechung.
 
 Die Stufe heißt `kamal`, verwendet aber nur den Proxy von Kamal, nicht die Kamal-CLI. Die CLI bräuchte einen SSH-Zugang mit Shell und Docker-Rechten (praktisch root); so bleibt der Deploy-Schlüssel auf die vier Aktionen beschränkt.
+
+### Stufe k3s
+
+GitOps mit Argo CD; die Pipeline hat keinen Zugang zum Cluster und keinen SSH-Schlüssel.
+
+```
+GitHub Actions                                   Branch factory-deploy            k3s-Cluster
+──────────────                                   ─────────────────────            ───────────
+Werte aus delivery.json + deploy/k3s/values.yaml
+Argo-Application (Chart von factory-pipelines  ─▶ argocd/<umgebung>/      ◀── Argo CD synchronisiert (≤ 1 min)
+  im Stand des Workflows, Image-Digest inline)      application.json            Wellen: Backup vor dem Deploy (production),
+/health von außen: meldet er den neuen Commit?                                   Datenbank, Migrationen, Seed (staging),
+  ja   → state/<umgebung>/good.json                                              Volumes und App (Rolling Update)
+  nein → application.json ← good.json (zurück)
+```
+
+- **Chart** [`charts/factory-app`](charts/factory-app): Postgres als StatefulSet, Volumes aus `state`, App als Deployment mit `/readyz` und `/livez`, Ingress mit TLS über cert-manager, Migrationen und Seed als Sync-Hooks, CronJobs für Backup, Restore-Test und Heartbeat. Ein Projekt braucht kein eigenes Chart, nur `deploy/k3s/values.yaml` für den Port der App, die Befehle für Migrationen und Seed, Ressourcen und die Pfade der Volumes ([Beispiel](examples/demo-app/deploy/k3s/values.yaml)).
+- **Secrets:** Der Infisical-Operator synchronisiert die Umgebung in das Secret `app-secrets` (`InfisicalStaticSecret`). Für private Images aus GHCR braucht die Umgebung zusätzlich `GHCR_PULL_TOKEN` (Token mit `read:packages`), daraus entsteht das Pull-Secret. Die k3s-Datenbank verschlüsselt Secrets.
+- **Rollback:** `rollback` setzt den vorletzten guten Stand (`state/<umgebung>/previous-good.json`).
+- **Restore:** `restore` trägt eine Anfrage in die Application ein; das Chart legt dann den Job `restore-<id>` an. Er hält die App an, spielt den Stand zurück und startet sie wieder. Die Pipeline wartet, bis die App weg und wieder gesund ist; ob der Restore selbst gelungen ist, meldet der Job an `HC_PING_URL_RESTORE` (ein Fehlschlag wird über den Runner der Factory zum Incident).
+- **Cluster einrichten:** [`templates/cloud-init/k3s-host.yaml`](templates/cloud-init/k3s-host.yaml) installiert k3s mit `--secrets-encryption`, cert-manager, Argo CD, den Infisical-Operator und die Root-Application, die `argocd/<umgebung>/` aus dem Deploy-Branch synchronisiert. Danach kein SSH mehr nötig.
+- **Grenzen:** ein Knoten pro Cluster (Zustand liegt auf dem Knoten, `local-path`); für mehrere Knoten braucht es verteilten Speicher (z. B. Longhorn). Die Replikazahl der App setzt das Chart beim Anlegen; danach gehört sie dem Restore-Job (Argo ignoriert `spec.replicas`).
 
 ## Konventionen für das Projekt
 
@@ -147,8 +169,9 @@ Was der Host danach tut:
 - **lint:** actionlint, shellcheck, [bats-Tests](tests/host.bats) der Host-Skripte, Schema, Compose-Dateien
 - **delivery:** der echte `delivery.yml` mit der [Demo-App](examples/demo-app): Konfiguration, Checks, Image, Test-Umgebung, E2E
 - **host-e2e:** der Runner als Deploy-Host, für beide Stufen (lokale Registry, SeaweedFS als S3, Test-Secrets): Deploy, kaputtes Image mit automatischem Rollback, manueller Rollback, Backup, Restore, Restore-Test; in der Stufe `kamal` zusätzlich der Nachweis, dass während Deploys und Rollback keine einzige Anfrage fehlschlägt
+- **k3s-e2e:** k3d-Cluster mit Argo CD (gleiche Chart-Version wie die cloud-init-Vorlage) und einem Wegwerf-Deploy-Branch dieses Repos: Deploy, kaputtes Image mit Rückkehr zum letzten guten Stand, zweiter Stand und manueller Rollback (Dauerabfrage ohne einen Fehler), Backup, Restore über den Deploy-Branch, Restore-Test
 
-Nicht im Selbsttest, erst im Pilotprojekt geprüft: die echte Anbindung an Infisical (OIDC in Actions, Universal Auth auf dem Host), GHCR-Pull mit Token, Caddy mit echter Domain.
+Nicht im Selbsttest, erst im Pilotprojekt geprüft: die echte Anbindung an Infisical (OIDC in Actions, Universal Auth auf dem Host, Operator im Cluster), GHCR-Pull mit Token, Caddy bzw. cert-manager mit echter Domain, die cloud-init-Vorlagen.
 
 ## Versionen
 
@@ -156,9 +179,9 @@ Nicht im Selbsttest, erst im Pilotprojekt geprüft: die echte Anbindung an Infis
 
 Der Workflow lädt seine Actions aus genau dem Commit, den das Projekt aufruft (über `job_workflow_sha` im OIDC-Token). Version von Workflow und Actions können so nicht auseinanderlaufen.
 
-## Grenzen von 0.2
+## Grenzen von 0.3
 
-- Stufe `k3s` wird geprüft, aber noch nicht deployt.
+- Stufe `k3s`: ein Knoten pro Cluster; Infisical-Operator, cert-manager und die cloud-init-Vorlage sind erst im Pilotprojekt geprüft.
 - Ein Image pro Projekt, eine Plattform (die erste aus `image.platforms`).
 - Point-in-Time-Recovery (`state[].pitr`) noch nicht umgesetzt.
 - Watchdog-Probe per GitHub Actions und Alloy-Konfiguration für Observability fehlen noch.
