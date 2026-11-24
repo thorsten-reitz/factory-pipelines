@@ -1,29 +1,15 @@
-{{- /* Ablauf beim Sync (Argo-Wellen): -1 Backup vor dem Deploy, 0 Datenbank und Volumes, 1 Migrationen, 2 Seed, 3 App */}}
+{{- /* Ablauf beim Sync (Argo-Wellen): -1 Backup vor dem Deploy, 0 Datenbank, 1 Migrationen, 2 Seed, 3 Volumes und App.
+     Migrationen und Seed arbeiten nur mit der Datenbank, deshalb ohne Volumes. */}}
 {{- define "factory.jobPod" -}}
 restartPolicy: Never
 {{- include "factory.pullSecrets" .root | nindent 0 }}
 containers:
   - name: {{ .name }}
-    image: {{ include "factory.image" .root }}
+    image: {{ include "factory.image" .root | quote }}
     command: {{- toYaml .command | nindent 6 }}
     envFrom:
       - secretRef:
           name: {{ .root.Values.secrets.name }}
-    {{- with .root.Values.volumes }}
-    volumeMounts:
-      {{- range . }}
-      - name: vol-{{ .name }}
-        mountPath: {{ .mountPath | default (printf "/data/%s" .name) }}
-      {{- end }}
-    {{- end }}
-{{- with .root.Values.volumes }}
-volumes:
-  {{- range . }}
-  - name: vol-{{ .name }}
-    persistentVolumeClaim:
-      claimName: {{ .name }}
-  {{- end }}
-{{- end }}
 {{- end }}
 
 {{- if and .Values.backup.enabled .Values.backup.preDeploy }}

@@ -45,7 +45,7 @@ spec:
       terminationGracePeriodSeconds: 30
       containers:
         - name: app
-          image: {{ include "factory.image" . }}
+          image: {{ include "factory.image" . | quote }}
           {{- with $a.command }}
           command: {{- toYaml . | nindent 12 }}
           {{- end }}

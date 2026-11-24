@@ -6,7 +6,8 @@ metadata:
   name: {{ .name }}
   labels: {{- include "factory.labels" $ | nindent 4 }}
   annotations:
-    argocd.argoproj.io/sync-wave: "0"
+    # Welle 3 wie die App: local-path bindet ein Volume erst, wenn ein Pod es nutzt
+    argocd.argoproj.io/sync-wave: "3"
     # Zustand: nie automatisch löschen, auch nicht beim Entfernen der App
     argocd.argoproj.io/sync-options: Delete=false,Prune=false
 spec:
