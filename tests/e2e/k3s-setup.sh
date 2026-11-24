@@ -20,7 +20,10 @@ echo "Registry im Cluster: $REG"
 echo "::endgroup::"
 
 echo "::group::S3 und Argo CD"
-docker run -d --name s3 -p 8333:8333 chrislusf/seaweedfs:4.50 server -dir=/data -s3 -s3.port=8333 -master.volumeSizeLimitMB=256 >/dev/null
+# Im Netz des Clusters, per IP erreichbar (Docker-Namen löst das DNS im Cluster nicht auf)
+docker run -d --name s3 --network k3d-e2e chrislusf/seaweedfs:4.50 server -dir=/data -s3 -s3.port=8333 -master.volumeSizeLimitMB=256 >/dev/null
+S3_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' s3)
+echo "S3 im Cluster-Netz: $S3_IP"
 helm repo add argo https://argoproj.github.io/argo-helm >/dev/null
 helm install argo-cd argo/argo-cd --version 10.17.0 -n argocd --create-namespace --wait --timeout 10m \
   --set dex.enabled=false --set notifications.enabled=false --set-string 'configs.cm.timeout\.reconciliation=15s' >/dev/null
@@ -43,7 +46,7 @@ kubectl -n "$NS" create secret generic app-secrets \
   --from-literal=POSTGRES_PASSWORD="$PG_PW" \
   --from-literal=DATABASE_URL="postgres://app:$PG_PW@db:5432/app" \
   --from-literal=HEALTH_TOKEN="$HEALTH" \
-  --from-literal=RESTIC_REPOSITORY="s3:http://host.k3d.internal:8333/backups/demo-staging-k3s" \
+  --from-literal=RESTIC_REPOSITORY="s3:http://$S3_IP:8333/backups/demo-staging-k3s" \
   --from-literal=RESTIC_PASSWORD="$(openssl rand -hex 16)" \
   --from-literal=AWS_ACCESS_KEY_ID=e2e --from-literal=AWS_SECRET_ACCESS_KEY=e2e-secret
 kubectl apply -f - <<YAML
