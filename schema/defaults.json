@@ -1,0 +1,26 @@
+{
+  "provisioning": "cloud-init",
+  "image": {
+    "dockerfile": "Dockerfile",
+    "context": ".",
+    "registry": "ghcr.io",
+    "platforms": ["linux/amd64"],
+    "scan": false
+  },
+  "environments": {},
+  "state": [],
+  "backup": {
+    "enabled": true,
+    "schedule": "daily",
+    "retention": { "daily": 7, "weekly": 4, "monthly": 12 },
+    "restoreTest": "weekly"
+  },
+  "health": { "components": [] },
+  "observability": { "enabled": true, "metrics": false },
+  "watchdog": {
+    "provider": "healthchecks",
+    "githubProbe": { "enabled": false, "intervalMinutes": 30 },
+    "externalHttp": "none"
+  },
+  "flags": { "enabled": false, "file": "flags/flags.json" }
+}

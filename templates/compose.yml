@@ -1,0 +1,68 @@
+# deploy/compose.yml im Projekt (Stufe compose, staging und production).
+# factory-host setzt: IMAGE (mit Digest), PROJECT_ENV, PORT, SECRETS_DIR, FACTORY_BIN.
+# Regeln:
+#   - Keine Secrets in dieser Datei. Sie liegen als Dateien in ${SECRETS_DIR}/${PROJECT_ENV}/ und werden
+#     von with-secrets beim Start als Umgebungsvariablen gesetzt (Dienste mit *_FILE-Unterstützung lesen sie direkt).
+#   - Die App lauscht nur auf 127.0.0.1:${PORT}; Caddy leitet die Domain dorthin.
+#   - Migrationen im Dienst "migrate" (Profil migrate), sie laufen beim Deploy vor dem Umschalten.
+#   - Jeder Dienst mit Speicherlimit. Volumes mit Zustand stehen in .factory/delivery.json unter "state".
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_DB: app
+      POSTGRES_PASSWORD_FILE: /run/secrets/app/POSTGRES_PASSWORD
+    volumes:
+      - db:/var/lib/postgresql/data
+      - ${SECRETS_DIR}/${PROJECT_ENV}:/run/secrets/app:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  migrate:
+    image: ${IMAGE}
+    profiles: [migrate]
+    entrypoint: ["/factory/with-secrets"]
+    command: ["npm", "run", "migrate"]
+    volumes:
+      - ${SECRETS_DIR}/${PROJECT_ENV}:/run/secrets/app:ro
+      - ${FACTORY_BIN}/with-secrets:/factory/with-secrets:ro
+    depends_on:
+      db:
+        condition: service_healthy
+
+  app:
+    image: ${IMAGE}
+    restart: unless-stopped
+    entrypoint: ["/factory/with-secrets"]
+    command: ["npm", "start"]
+    ports:
+      - "127.0.0.1:${PORT}:3000"
+    volumes:
+      - uploads:/data/uploads
+      - ${SECRETS_DIR}/${PROJECT_ENV}:/run/secrets/app:ro
+      - ${FACTORY_BIN}/with-secrets:/factory/with-secrets:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/livez').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+
+volumes:
+  db: {}
+  uploads: {}

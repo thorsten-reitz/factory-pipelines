@@ -1,0 +1,332 @@
+#!/usr/bin/env bash
+# factory-host: Einstiegspunkt auf einem Deploy-Host (Stufe compose).
+#
+# Per SSH (Forced Command in authorized_keys des Nutzers deploy):
+#   command="/opt/factory/bin/factory-host --ssh --allow '*'" ssh-ed25519 ...
+#   Aktion aus SSH_ORIGINAL_COMMAND: deploy | rollback | restore | status
+#   Das Bündel (compose.yml, delivery.json, release.json, registry.json) kommt als tar.gz über stdin.
+#
+# Lokal bzw. per systemd-Timer:
+#   factory-host backup-all | restore-test-all | heartbeat-all | secrets-all
+#   factory-host status <projekt-umgebung>
+set -euo pipefail
+FACTORY_LIB="${FACTORY_LIB:-$(cd "$(dirname "$(readlink -f "$0")")/../lib" && pwd)}"
+# shellcheck source=../lib/common.sh
+. "$FACTORY_LIB/common.sh"
+load_host_env
+
+PROTOCOL=1
+
+# ---------- Bündel empfangen und prüfen ----------
+
+receive_bundle() {
+  BUNDLE=$(mktemp -d /tmp/factory-bundle.XXXXXX)
+  trap 'rm -rf "$BUNDLE"' EXIT
+  head -c 10485760 | tar -xzf - -C "$BUNDLE" --no-same-owner --no-same-permissions \
+    || die "Bündel konnte nicht gelesen werden"
+  [ -z "$(find "$BUNDLE" -mindepth 1 -not -type f)" ] || die "Bündel enthält etwas anderes als Dateien"
+  local f
+  for f in "$BUNDLE"/*; do
+    case "$(basename "$f")" in compose.yml|delivery.json|release.json|registry.json) ;; *) die "Unerwartete Datei im Bündel: $(basename "$f")" ;; esac
+  done
+  [ -f "$BUNDLE/release.json" ] && [ -f "$BUNDLE/delivery.json" ] || die "release.json oder delivery.json fehlt"
+  jq -e . "$BUNDLE/release.json" "$BUNDLE/delivery.json" >/dev/null || die "Ungültiges JSON im Bündel"
+
+  local protocol verb
+  protocol=$(json_get "$BUNDLE/release.json" .protocol)
+  [ "$protocol" = "$PROTOCOL" ] || die "Protokoll $protocol passt nicht zu diesem Host ($PROTOCOL). Host-Skripte aktualisieren."
+  verb=$(json_get "$BUNDLE/release.json" .verb)
+  [ "$verb" = "$1" ] || die "Aktion im Bündel ($verb) passt nicht zur SSH-Aktion ($1)"
+  PROJECT=$(json_get "$BUNDLE/release.json" .project)
+  ENVIRONMENT=$(json_get "$BUNDLE/release.json" .environment)
+  IMAGE=$(json_get "$BUNDLE/release.json" .image)
+  COMMIT=$(json_get "$BUNDLE/release.json" .commit)
+  SNAPSHOT=$(json_get "$BUNDLE/release.json" .snapshot)
+  INFISICAL_ID=$(json_get "$BUNDLE/release.json" .infisicalProjectId)
+  valid_name "$PROJECT" || die "Ungültiger Projektname: $PROJECT"
+  valid_env "$ENVIRONMENT" || die "Ungültige Umgebung: $ENVIRONMENT"
+  [[ "$COMMIT" =~ ^[0-9a-f]{7,40}$ ]] || die "Ungültiger Commit: $COMMIT"
+  [[ "$INFISICAL_ID" =~ ^[A-Za-z0-9-]*$ ]] || die "Ungültige Infisical-Projekt-ID"
+  [ -z "$SNAPSHOT" ] || valid_snapshot "$SNAPSHOT" || die "Ungültiger Snapshot: $SNAPSHOT"
+  if [ "$verb" = deploy ]; then
+    valid_image "$IMAGE" || die "Ungültige Image-Referenz: $IMAGE"
+    [ -f "$BUNDLE/compose.yml" ] || die "compose.yml fehlt im Bündel"
+  fi
+  NAME="$PROJECT-$ENVIRONMENT"
+  APP="$SRV_DIR/$NAME"
+}
+
+# ---------- Hilfen ----------
+
+dc() {
+  local rel="$1"; shift
+  docker compose --project-name "$NAME" --project-directory "$rel" -f "$rel/compose.yml" --env-file "$rel/release.env" "$@"
+}
+
+port_of() { json_get "$1/delivery.json" ".environments[\"$ENVIRONMENT\"].port"; }
+
+state_services() { jq -r '.state[]? | select(.type == "postgres") | .service' "$1/delivery.json"; }
+
+set_link() { ln -sfn "$2" "$1.new" && mv -Tf "$1.new" "$1"; }
+
+refresh_secrets() {
+  local infisical_id="${1:-}"
+  as_root "$FACTORY_BIN/factory-secrets" "$PROJECT" "$ENVIRONMENT" "$infisical_id" \
+    || die "Secrets für $NAME konnten nicht geholt werden"
+}
+
+pull_image() {
+  if [ -f "$BUNDLE/registry.json" ]; then
+    local cfg registry user
+    cfg=$(mktemp -d)
+    registry=$(json_get "$BUNDLE/registry.json" .registry)
+    user=$(json_get "$BUNDLE/registry.json" .user)
+    jq -r .token "$BUNDLE/registry.json" | docker --config "$cfg" login "$registry" -u "$user" --password-stdin >/dev/null \
+      || { rm -rf "$cfg"; die "Anmeldung an $registry fehlgeschlagen"; }
+    docker --config "$cfg" pull -q "$IMAGE" >/dev/null || { rm -rf "$cfg"; die "Image $IMAGE konnte nicht geladen werden"; }
+    rm -rf "$cfg"
+  else
+    docker pull -q "$IMAGE" >/dev/null || die "Image $IMAGE konnte nicht geladen werden"
+  fi
+}
+
+# Wartet, bis /readyz 200 liefert und /health in Ordnung ist (status ok/degraded, richtiger Commit)
+wait_healthy() {
+  local rel="$1" port expected token deadline body
+  port=$(port_of "$rel")
+  valid_port "$port" || { log "Kein gültiger Port für $ENVIRONMENT in delivery.json"; return 1; }
+  expected=$(json_get "$rel/release.json" .commit)
+  token=""
+  [ -r "$SECRETS_DIR/$NAME/HEALTH_TOKEN" ] && token=$(cat "$SECRETS_DIR/$NAME/HEALTH_TOKEN")
+  [ -n "$token" ] || log "Warnung: HEALTH_TOKEN fehlt in den Secrets von $NAME"
+  deadline=$(( $(date +%s) + HEALTH_TIMEOUT ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    if curl -fsS -m 5 "http://127.0.0.1:$port/readyz" >/dev/null 2>&1; then
+      body=$(curl -fsS -m 10 -H "Authorization: Bearer $token" "http://127.0.0.1:$port/health" 2>/dev/null || true)
+      if [ -n "$body" ] && health_ok "$body" "$expected"; then
+        log "Health in Ordnung: $(jq -c '{status, commit, version}' <<<"$body")"
+        return 0
+      fi
+    fi
+    sleep 3
+  done
+  log "Health-Check nach ${HEALTH_TIMEOUT}s nicht grün. Letzte Antwort von /health: ${body:-keine}"
+  dc "$rel" logs --no-color --tail 80 >&2 || true
+  return 1
+}
+
+prune_releases() {
+  local keep cur prev d n=0
+  keep="$KEEP_RELEASES"
+  cur=$(readlink -f "$APP/current" 2>/dev/null || true)
+  prev=$(readlink -f "$APP/previous" 2>/dev/null || true)
+  while IFS= read -r d; do
+    n=$((n + 1))
+    [ "$n" -le "$keep" ] && continue
+    [ "$d" = "$cur" ] || [ "$d" = "$prev" ] && continue
+    rm -rf "$d"
+  done < <(find "$APP/releases" -mindepth 1 -maxdepth 1 -type d | sort -r)
+}
+
+backup_enabled() { [ "$(jq -r '.backup.enabled and ((.state // []) | length > 0)' "$1/delivery.json")" = true ]; }
+
+# Startet das Backup-Image mit Zugriff auf das Compose-Netz, die Secrets und die Volumes der App
+backup_container() {
+  local name="$1" rel="$2" mode="$3"; shift 3
+  local args vol
+  args=(--rm --name "factory-backup-$name-$$" --network "${name}_default" --add-host host.docker.internal:host-gateway
+        -v "$SECRETS_DIR/$name:/run/secrets/app:ro"
+        -v "$(readlink -f "$rel")/delivery.json:/etc/factory/delivery.json:ro"
+        -e "PROJECT_ENV=$name")
+  while IFS= read -r vol; do
+    [ -n "$vol" ] || continue
+    if [ "$mode" = rw ]; then args+=(-v "${name}_${vol}:/data/${vol}"); else args+=(-v "${name}_${vol}:/data/${vol}:ro"); fi
+  done < <(jq -r '.state[]? | select(.type == "volume") | .name' "$rel/delivery.json")
+  docker run "${args[@]}" "$BACKUP_IMAGE" "$@"
+}
+
+ping_check() {
+  local name="$1" var="$2" suffix="${3:-}" url
+  [ -r "$SECRETS_DIR/$name/$var" ] || return 0
+  url=$(cat "$SECRETS_DIR/$name/$var")
+  [ -n "$url" ] && curl -fsS -m 10 --retry 3 "${url%/}$suffix" >/dev/null 2>&1 || true
+}
+
+# ---------- Aktionen ----------
+
+do_deploy() {
+  local rel old_cur old_prev domain port short
+  mkdir -p "$APP/releases"
+  short="${IMAGE##*@sha256:}"
+  rel="$APP/releases/$(date -u +%Y%m%dT%H%M%SZ)-${short:0:12}"
+  [ -e "$rel" ] && rel="$rel-$$"
+  mkdir "$rel"
+  cp "$BUNDLE/compose.yml" "$BUNDLE/delivery.json" "$BUNDLE/release.json" "$rel/"
+  port=$(port_of "$rel"); valid_port "$port" || die "environments.$ENVIRONMENT.port fehlt oder ist ungültig"
+  {
+    echo "IMAGE=$IMAGE"
+    echo "PROJECT_ENV=$NAME"
+    echo "PORT=$port"
+    echo "SECRETS_DIR=$SECRETS_DIR"
+    echo "FACTORY_BIN=$FACTORY_BIN"
+  } > "$rel/release.env"
+
+  log "Secrets holen"
+  refresh_secrets "$INFISICAL_ID"
+  log "Image laden: $IMAGE"
+  pull_image
+  dc "$rel" config --quiet || die "compose.yml ist ungültig"
+
+  old_cur=$(readlink -f "$APP/current" 2>/dev/null || true)
+  old_prev=$(readlink -f "$APP/previous" 2>/dev/null || true)
+
+  if [ "$ENVIRONMENT" = production ] && [ -n "$old_cur" ] && backup_enabled "$old_cur"; then
+    log "Backup vor dem Deploy"
+    backup_container "$NAME" "$old_cur" ro backup pre-deploy || die "Backup vor dem Deploy fehlgeschlagen, Deploy abgebrochen"
+  fi
+
+  if dc "$rel" --profile migrate config --services | grep -qx migrate; then
+    log "Migrationen ausführen"
+    dc "$rel" --profile migrate run --rm migrate || die "Migration fehlgeschlagen, die bisherige Version läuft weiter"
+  fi
+
+  log "Umschalten auf $(basename "$rel")"
+  set_link "$APP/current" "$rel"
+  if dc "$rel" up -d --remove-orphans && wait_healthy "$rel"; then
+    [ -n "$old_cur" ] && [ "$old_cur" != "$rel" ] && set_link "$APP/previous" "$old_cur"
+    domain=$(json_get "$rel/delivery.json" ".environments[\"$ENVIRONMENT\"].domain")
+    if [ -n "$domain" ]; then as_root "$FACTORY_BIN/factory-site" "$NAME" "$domain" "$port" || log "Warnung: Caddy-Site für $domain nicht geschrieben"; fi
+    prune_releases
+    log "Deploy erfolgreich: $NAME läuft mit $IMAGE"
+    return 0
+  fi
+
+  touch "$rel/FAILED"
+  if [ -n "$old_cur" ]; then
+    log "Rollback auf $(basename "$old_cur")"
+    set_link "$APP/current" "$old_cur"
+    [ -n "$old_prev" ] && set_link "$APP/previous" "$old_prev"
+    if dc "$old_cur" up -d --remove-orphans && wait_healthy "$old_cur"; then
+      die "Deploy fehlgeschlagen, Rollback auf die vorige Version erfolgreich"
+    fi
+    die "Deploy fehlgeschlagen und auch der Rollback ist nicht gesund. Bitte sofort prüfen."
+  fi
+  die "Erster Deploy von $NAME fehlgeschlagen (keine vorige Version zum Zurückrollen)"
+}
+
+do_rollback() {
+  local cur target
+  cur=$(readlink -f "$APP/current" 2>/dev/null || true)
+  target=$(readlink -f "$APP/previous" 2>/dev/null || true)
+  [ -n "$target" ] && [ -d "$target" ] || die "Keine vorige Version für $NAME vorhanden"
+  refresh_secrets "$(json_get "$target/release.json" .infisicalProjectId)"
+  set_link "$APP/current" "$target"
+  [ -n "$cur" ] && set_link "$APP/previous" "$cur"
+  dc "$target" up -d --remove-orphans || die "Rollback: Start fehlgeschlagen"
+  wait_healthy "$target" || die "Rollback ausgeführt, aber die Version ist nicht gesund"
+  log "Rollback erfolgreich: $NAME läuft mit $(json_get "$target/release.json" .image)"
+}
+
+do_restore() {
+  local cur services svc keep state
+  cur=$(readlink -f "$APP/current" 2>/dev/null || true)
+  [ -n "$cur" ] || die "$NAME ist noch nicht deployt"
+  backup_enabled "$cur" || die "Für $NAME ist kein Zustand (state) bzw. kein Backup konfiguriert"
+  state=$(state_services "$cur")
+  services=()
+  while IFS= read -r svc; do
+    keep=0
+    while IFS= read -r s; do [ "$svc" = "$s" ] && keep=1; done <<<"$state"
+    [ $keep -eq 0 ] && services+=("$svc")
+  done < <(dc "$cur" config --services)
+  log "App anhalten (${services[*]}), Zustand zurückspielen: ${SNAPSHOT:-latest}"
+  [ ${#services[@]} -gt 0 ] && dc "$cur" stop "${services[@]}"
+  if ! backup_container "$NAME" "$cur" rw restore "${SNAPSHOT:-latest}"; then
+    dc "$cur" up -d || true
+    die "Restore fehlgeschlagen. Die App wurde wieder gestartet; der Zustand kann teilweise zurückgespielt sein."
+  fi
+  dc "$cur" up -d
+  wait_healthy "$cur" || die "Restore ausgeführt, aber die App ist danach nicht gesund"
+  log "Restore erfolgreich"
+}
+
+do_status() {
+  local cur
+  cur=$(readlink -f "$APP/current" 2>/dev/null || true)
+  [ -n "$cur" ] || { echo "{\"app\": \"$NAME\", \"deployed\": false}"; return 0; }
+  jq -c --arg app "$NAME" '{app: $app, deployed: true, image, commit}' "$cur/release.json"
+  dc "$cur" ps --format '{{.Service}}: {{.State}} {{.Health}}'
+}
+
+# Für Timer: alle deployten Apps dieses Hosts
+for_each_app() {
+  local fn="$1" cur failed=0
+  for cur in "$SRV_DIR"/*/current; do
+    [ -e "$cur" ] || continue
+    cur=$(readlink -f "$cur")
+    PROJECT=$(json_get "$cur/release.json" .project)
+    ENVIRONMENT=$(json_get "$cur/release.json" .environment)
+    NAME="$PROJECT-$ENVIRONMENT"; APP="$SRV_DIR/$NAME"
+    valid_name "$PROJECT" && valid_env "$ENVIRONMENT" || { log "Überspringe $cur (ungültige release.json)"; continue; }
+    "$fn" "$cur" || { failed=1; log "$fn für $NAME fehlgeschlagen"; }
+  done
+  return $failed
+}
+
+app_backup() {
+  backup_enabled "$1" || return 0
+  log "Backup $NAME"
+  if backup_container "$NAME" "$1" ro backup scheduled; then ping_check "$NAME" HC_PING_URL_BACKUP; else ping_check "$NAME" HC_PING_URL_BACKUP /fail; return 1; fi
+}
+
+app_restore_test() {
+  backup_enabled "$1" || return 0
+  [ "$(jq -r '.backup.restoreTest' "$1/delivery.json")" = weekly ] || return 0
+  log "Restore-Test $NAME"
+  if backup_container "$NAME" "$1" ro verify; then ping_check "$NAME" HC_PING_URL_RESTORE_TEST; else ping_check "$NAME" HC_PING_URL_RESTORE_TEST /fail; return 1; fi
+}
+
+app_heartbeat() {
+  local port
+  port=$(port_of "$1")
+  if curl -fsS -m 5 "http://127.0.0.1:$port/readyz" >/dev/null 2>&1; then ping_check "$NAME" HC_PING_URL; else ping_check "$NAME" HC_PING_URL /fail; return 1; fi
+}
+
+app_secrets() { refresh_secrets "$(json_get "$1/release.json" .infisicalProjectId)"; }
+
+# ---------- Einstieg ----------
+
+case "${1:-}" in
+  --ssh)
+    shift
+    ALLOW="*"
+    [ "${1:-}" = --allow ] && { ALLOW="${2:?--allow braucht eine Liste}"; shift 2; }
+    VERB="${SSH_ORIGINAL_COMMAND:-}"
+    case "$VERB" in deploy|rollback|restore|status) ;; *) die "Nicht erlaubt: '$VERB'. Erlaubt sind deploy, rollback, restore, status." ;; esac
+    receive_bundle "$VERB"
+    allowed "$NAME" "$ALLOW" || die "Dieser Schlüssel darf $NAME nicht verändern"
+    exec 9>"/tmp/factory-host-$NAME.lock"
+    flock -w 600 9 || die "Ein anderer Vorgang für $NAME läuft noch"
+    case "$VERB" in
+      deploy) do_deploy ;;
+      rollback) do_rollback ;;
+      restore) do_restore ;;
+      status) do_status ;;
+    esac
+    ;;
+  backup-all) for_each_app app_backup ;;
+  restore-test-all) for_each_app app_restore_test ;;
+  heartbeat-all) for_each_app app_heartbeat ;;
+  secrets-all) for_each_app app_secrets ;;
+  status)
+    NAME="${2:?Aufruf: factory-host status <projekt-umgebung>}"
+    APP="$SRV_DIR/$NAME"
+    [ -e "$APP/current" ] || die "$NAME ist nicht deployt"
+    ENVIRONMENT=$(json_get "$(readlink -f "$APP/current")/release.json" .environment)
+    do_status
+    ;;
+  *)
+    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+    exit 2
+    ;;
+esac

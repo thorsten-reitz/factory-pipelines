@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/thorsten-reitz/factory-pipelines/v0/schema/delivery.schema.json",
+  "title": "Factory delivery configuration (.factory/delivery.json)",
+  "description": "Betriebsschalter eines Factory-Projekts. Fehlende Werte kommen aus schema/defaults.json.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["tier"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "project": {
+      "description": "Projektname für Hosts, Volumes und Backups. Standard: Repo-Name in Kleinbuchstaben.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,39}$"
+    },
+    "tier": {
+      "description": "Orchestrierungs-Stufe. v0.1 deployt nur 'compose'.",
+      "enum": ["compose", "kamal", "k3s"]
+    },
+    "provisioning": { "enum": ["cloud-init", "opentofu"] },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dockerfile": { "type": "string", "minLength": 1 },
+        "context": { "type": "string", "minLength": 1 },
+        "registry": { "type": "string", "pattern": "^[a-z0-9.-]+(:[0-9]+)?$" },
+        "platforms": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "scan": { "type": "boolean" }
+      }
+    },
+    "environments": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "test": { "$ref": "#/$defs/testEnvironment" },
+        "staging": { "$ref": "#/$defs/deployEnvironment" },
+        "production": { "$ref": "#/$defs/deployEnvironment" }
+      }
+    },
+    "state": {
+      "description": "Alles mit Zustand. Wird gesichert, beim Restore zurückgespielt und im Restore-Test geprüft.",
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["type", "service"],
+            "properties": {
+              "type": { "const": "postgres" },
+              "service": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$" },
+              "urlEnv": {
+                "description": "Name des Secrets mit der Verbindungs-URL. Standard: DATABASE_URL.",
+                "type": "string",
+                "pattern": "^[A-Z_][A-Z0-9_]*$"
+              },
+              "pitr": { "type": "boolean" }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["type", "name"],
+            "properties": {
+              "type": { "const": "volume" },
+              "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$" }
+            }
+          }
+        ]
+      }
+    },
+    "backup": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "schedule": { "enum": ["daily"] },
+        "retention": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "daily": { "type": "integer", "minimum": 1 },
+            "weekly": { "type": "integer", "minimum": 0 },
+            "monthly": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "restoreTest": { "enum": ["weekly", "off"] }
+      }
+    },
+    "health": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "components": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "observability": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "metrics": { "type": "boolean" }
+      }
+    },
+    "watchdog": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "provider": { "enum": ["healthchecks", "none"] },
+        "githubProbe": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "intervalMinutes": { "type": "integer", "minimum": 5 }
+          }
+        },
+        "externalHttp": { "enum": ["none", "uptimerobot"] }
+      }
+    },
+    "flags": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "file": { "type": "string" }
+      }
+    }
+  },
+  "$defs": {
+    "testEnvironment": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "e2e": { "type": "boolean" },
+        "services": { "description": "Compose-Datei für die Test-Umgebung in CI.", "type": "string" },
+        "url": { "description": "Adresse der App in der Test-Umgebung.", "type": "string", "format": "uri" }
+      }
+    },
+    "deployEnvironment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["port"],
+      "properties": {
+        "port": {
+          "description": "Port auf 127.0.0.1 des Hosts, an den Caddy weiterleitet. Pro Host eindeutig (Konvention: 5100-5999).",
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 65535
+        },
+        "domain": { "type": "string", "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$" },
+        "url": { "description": "Öffentliche Adresse für den Health-Check von außen. Standard: https://<domain>.", "type": "string", "format": "uri" },
+        "autoDeploy": { "type": "boolean" },
+        "approval": { "type": "boolean" },
+        "data": { "enum": ["seed", "anonymized-copy"] }
+      }
+    }
+  }
+}

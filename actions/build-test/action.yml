@@ -1,0 +1,100 @@
+name: factory-build-test
+description: Baut das Image, testet es in der Test-Umgebung (Compose in CI) und pusht es auf Wunsch. Gibt die Referenz mit Digest aus.
+inputs:
+  working-directory:
+    default: project
+  config:
+    description: Vollständige Konfiguration (Ausgabe von factory-config)
+    required: true
+  image:
+    description: Image-Name ohne Tag
+    required: true
+  push:
+    description: "'true': Image in die Registry pushen"
+    default: "false"
+  registry-token:
+    description: Token für die Registry (GHCR: GITHUB_TOKEN)
+    default: ""
+outputs:
+  ref:
+    description: Image-Referenz mit Digest (nur nach Push), z. B. ghcr.io/o/r@sha256:...
+    value: ${{ steps.push.outputs.ref }}
+runs:
+  using: composite
+  steps:
+    - name: Build-Werte
+      id: vars
+      shell: bash
+      env:
+        CONFIG: ${{ inputs.config }}
+        WD: ${{ inputs.working-directory }}
+      run: |
+        {
+          echo "context=$WD/$(jq -r '.image.context' <<<"$CONFIG")"
+          echo "dockerfile=$WD/$(jq -r '.image.dockerfile' <<<"$CONFIG")"
+          echo "platform=$(jq -r '.image.platforms[0]' <<<"$CONFIG")"
+          echo "scan=$(jq -r '.image.scan' <<<"$CONFIG")"
+          echo "e2e=$(jq -r '.environments.test.e2e // false' <<<"$CONFIG")"
+          echo "services=$(jq -r '.environments.test.services // ""' <<<"$CONFIG")"
+          echo "url=$(jq -r '.environments.test.url // ""' <<<"$CONFIG")"
+          echo "version=$(jq -r '.version // "0.0.0"' "$WD/package.json" 2>/dev/null || echo 0.0.0)"
+        } >> "$GITHUB_OUTPUT"
+    - uses: docker/setup-buildx-action@v3
+      with:
+        driver-opts: network=host
+    - name: Image bauen
+      uses: docker/build-push-action@v6
+      with:
+        context: ${{ steps.vars.outputs.context }}
+        file: ${{ steps.vars.outputs.dockerfile }}
+        platforms: ${{ steps.vars.outputs.platform }}
+        load: true
+        push: false
+        tags: ${{ inputs.image }}:sha-${{ github.sha }}
+        build-args: |
+          GIT_COMMIT=${{ github.sha }}
+          APP_VERSION=${{ steps.vars.outputs.version }}
+        labels: |
+          org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          org.opencontainers.image.revision=${{ github.sha }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+    - name: Sicherheits-Scan
+      if: steps.vars.outputs.scan == 'true'
+      uses: aquasecurity/trivy-action@0.28.0
+      with:
+        image-ref: ${{ inputs.image }}:sha-${{ github.sha }}
+        severity: CRITICAL
+        ignore-unfixed: true
+        exit-code: "1"
+    - name: Test-Umgebung und E2E
+      if: steps.vars.outputs.e2e == 'true'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        IMAGE: ${{ inputs.image }}:sha-${{ github.sha }}
+        SERVICES: ${{ steps.vars.outputs.services }}
+        BASE_URL: ${{ steps.vars.outputs.url }}
+      run: '"$GITHUB_ACTION_PATH/test-env.sh"'
+    - name: Push
+      id: push
+      if: inputs.push == 'true'
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+        TAG: sha-${{ github.sha }}
+        TOKEN: ${{ inputs.registry-token }}
+        ACTOR: ${{ github.actor }}
+      run: |
+        set -euo pipefail
+        REGISTRY="${IMAGE%%/*}"
+        case "$REGISTRY" in
+          localhost*|127.0.0.1*) ;;
+          *) [ -n "$TOKEN" ] || { echo "::error::registry-token fehlt für $REGISTRY"; exit 1; }
+             printf '%s' "$TOKEN" | docker login "$REGISTRY" -u "$ACTOR" --password-stdin >/dev/null ;;
+        esac
+        docker push -q "$IMAGE:$TAG"
+        REF=$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE:$TAG" | grep "^$IMAGE@sha256:" | head -1)
+        [ -n "$REF" ] || { echo "::error::Kein Digest für $IMAGE:$TAG gefunden"; exit 1; }
+        echo "ref=$REF" >> "$GITHUB_OUTPUT"
+        echo "Image: \`$REF\`" >> "$GITHUB_STEP_SUMMARY"

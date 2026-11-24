@@ -1,0 +1,9 @@
+[Unit]
+Description=Factory: Restore-Test aller Apps (neuester Snapshot in Wegwerf-Datenbank)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=deploy
+ExecStart=/opt/factory/bin/factory-host restore-test-all

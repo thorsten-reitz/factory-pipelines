@@ -1,0 +1,159 @@
+# Selbsttest von factory-pipelines. Drei Ebenen:
+#   lint        actionlint, shellcheck, bats (Host-Skripte), Schema und Compose-Dateien
+#   delivery    der echte delivery.yml mit der Demo-App: Konfiguration, Checks, Image, Test-Umgebung, E2E
+#   host-e2e    der Runner als Deploy-Host: Deploy, kaputtes Image mit automatischem Rollback,
+#               manueller Rollback, Backup nach S3 (MinIO), Restore, Restore-Test
+name: self-test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: actionlint
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7
+          ./actionlint -color
+      - name: shellcheck
+        run: |
+          shellcheck -x host/bin/factory-host host/bin/factory-secrets host/bin/factory-site host/install.sh \
+            actions/*/*.sh tests/e2e/*.sh scripts/*.sh
+          shellcheck -s sh host/bin/with-secrets images/backup/backup.sh
+      - name: bats
+        run: |
+          sudo apt-get install -y -qq bats >/dev/null
+          bats tests/
+      - name: Schema und Beispiele
+        run: |
+          pipx run --spec "check-jsonschema==0.33.0" check-jsonschema --check-metaschema schema/delivery.schema.json
+          pipx run --spec "check-jsonschema==0.33.0" check-jsonschema --schemafile schema/delivery.schema.json \
+            examples/demo-app/.factory/delivery.json templates/delivery.example.json
+      - name: Compose-Dateien
+        env:
+          IMAGE: example/app@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          PROJECT_ENV: app-staging
+          PORT: "5101"
+          SECRETS_DIR: /run/secrets
+          FACTORY_BIN: /opt/factory/bin
+        run: |
+          for f in examples/demo-app/deploy/compose.yml templates/compose.yml; do
+            docker compose -f "$f" --profile migrate config --quiet && echo "✓ $f"
+          done
+          for f in examples/demo-app/deploy/compose.test.yml templates/compose.test.yml; do
+            docker compose -f "$f" config --quiet && echo "✓ $f"
+          done
+
+  delivery:
+    uses: ./.github/workflows/delivery.yml
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      issues: write
+      pull-requests: write
+    with:
+      config: .factory/delivery.json
+      working_directory: examples/demo-app
+
+  host-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: .pipelines
+      - id: config
+        uses: ./.pipelines/actions/config
+        with:
+          working-directory: .pipelines/examples/demo-app
+      - id: host
+        name: Runner als Deploy-Host einrichten
+        run: bash .pipelines/tests/e2e/setup-host.sh
+
+      - name: 1. Deploy (gutes Image)
+        uses: ./.pipelines/actions/deploy-env
+        with:
+          verb: deploy
+          environment: staging
+          working-directory: .pipelines/examples/demo-app
+          config: ${{ steps.config.outputs.config }}
+          image: ${{ steps.host.outputs.good }}
+          secrets-provider: test
+          test-secrets: ${{ steps.host.outputs.secrets }}
+          notify: "false"
+      - run: bash .pipelines/tests/e2e/check.sh healthy "${{ steps.host.outputs.good }}"
+      - run: bash .pipelines/tests/e2e/check.sh seed
+
+      - name: 2. Deploy (kaputtes Image) – muss fehlschlagen und zurückrollen
+        id: broken
+        continue-on-error: true
+        uses: ./.pipelines/actions/deploy-env
+        with:
+          verb: deploy
+          environment: staging
+          working-directory: .pipelines/examples/demo-app
+          config: ${{ steps.config.outputs.config }}
+          image: ${{ steps.host.outputs.broken }}
+          secrets-provider: test
+          test-secrets: ${{ steps.host.outputs.secrets }}
+          notify: "false"
+      - name: Rollback hat gegriffen
+        run: |
+          [ "${{ steps.broken.outcome }}" = failure ] || { echo "::error::Deploy des kaputten Images hätte fehlschlagen müssen"; exit 1; }
+          bash .pipelines/tests/e2e/check.sh healthy "${{ steps.host.outputs.good }}"
+
+      - name: 3. Erneuter Deploy, dann manueller Rollback
+        uses: ./.pipelines/actions/deploy-env
+        with:
+          verb: deploy
+          environment: staging
+          working-directory: .pipelines/examples/demo-app
+          config: ${{ steps.config.outputs.config }}
+          image: ${{ steps.host.outputs.good }}
+          secrets-provider: test
+          test-secrets: ${{ steps.host.outputs.secrets }}
+          notify: "false"
+      - uses: ./.pipelines/actions/deploy-env
+        with:
+          verb: rollback
+          environment: staging
+          working-directory: .pipelines/examples/demo-app
+          config: ${{ steps.config.outputs.config }}
+          secrets-provider: test
+          test-secrets: ${{ steps.host.outputs.secrets }}
+          notify: "false"
+      - run: bash .pipelines/tests/e2e/check.sh healthy "${{ steps.host.outputs.good }}"
+
+      - name: 4. Backup nach S3 (MinIO)
+        run: sudo -u deploy /opt/factory/bin/factory-host backup-all
+      - run: bash .pipelines/tests/e2e/check.sh wipe
+      - name: 5. Restore per Workflow-Aktion
+        uses: ./.pipelines/actions/deploy-env
+        with:
+          verb: restore
+          environment: staging
+          working-directory: .pipelines/examples/demo-app
+          config: ${{ steps.config.outputs.config }}
+          snapshot: latest
+          secrets-provider: test
+          test-secrets: ${{ steps.host.outputs.secrets }}
+          notify: "false"
+      - run: bash .pipelines/tests/e2e/check.sh seeded
+      - name: 6. Restore-Test
+        run: sudo -u deploy /opt/factory/bin/factory-host restore-test-all
+
+      - name: Diagnose
+        if: failure()
+        run: |
+          docker ps -a
+          for c in $(docker ps -a --format '{{.Names}}' | grep demo-staging); do echo "::group::$c"; docker logs --tail 100 "$c"; echo "::endgroup::"; done
+          sudo ls -la /srv/demo-staging /srv/demo-staging/releases || true

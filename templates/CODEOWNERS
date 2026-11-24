@@ -1,0 +1,5 @@
+# Änderungen an Pipeline und Betriebskonfiguration brauchen das Review des Projektverantwortlichen.
+# Platzhalter durch den GitHub-Namen ersetzen (macht /init).
+/.github/                @OWNER
+/.factory/delivery.json  @OWNER
+/deploy/                 @OWNER

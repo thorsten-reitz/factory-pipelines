@@ -1,0 +1,262 @@
+# Einstieg für Factory-Projekte. Aufruf aus dem Projekt (templates/delivery.yml):
+#
+#   jobs:
+#     delivery:
+#       uses: thorsten-reitz/factory-pipelines/.github/workflows/delivery.yml@v0.1.0
+#       with:
+#         config: .factory/delivery.json
+#
+# Ablauf: setup (Konfiguration prüfen) → ci (Checks, Image, Test-Umgebung, E2E, Push) →
+#         staging (automatisch ab main) → production (nach Freigabe an der GitHub-Umgebung).
+# Manuell (workflow_dispatch im Projekt): action = deploy | rollback | restore.
+name: delivery
+
+on:
+  workflow_call:
+    inputs:
+      config:
+        description: Pfad zur delivery.json (relativ zu working_directory)
+        type: string
+        default: .factory/delivery.json
+      working_directory:
+        description: Projektordner im Repo
+        type: string
+        default: "."
+      action:
+        description: "Leer bei push/pull_request. Manuell: deploy | rollback | restore"
+        type: string
+        default: ""
+      environment:
+        description: "Für action: staging | production"
+        type: string
+        default: ""
+      snapshot:
+        description: "Für restore: latest, YYYY-MM-DD oder YYYY-MM-DDTHH:MM"
+        type: string
+        default: latest
+      pipelines_ref:
+        description: "Nur falls kein OIDC-Token verfügbar ist: Commit oder Tag von factory-pipelines"
+        type: string
+        default: ""
+      pipelines_repo:
+        type: string
+        default: thorsten-reitz/factory-pipelines
+
+jobs:
+  setup:
+    name: Konfiguration
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      pipelines_sha: ${{ steps.ref.outputs.sha }}
+      pipelines_repo: ${{ steps.ref.outputs.repo }}
+      config: ${{ steps.cfg.outputs.config }}
+      project: ${{ steps.cfg.outputs.project }}
+      language: ${{ steps.cfg.outputs.language }}
+      image: ${{ steps.cfg.outputs.image }}
+      staging: ${{ steps.cfg.outputs.staging }}
+      production: ${{ steps.cfg.outputs.production }}
+      deploy_on_push: ${{ steps.cfg.outputs.deploy_on_push }}
+    steps:
+      # Ein wiederverwendbarer Workflow kennt seinen eigenen Stand nicht als Kontext. Das OIDC-Token enthält
+      # ihn (job_workflow_sha): damit laden alle Jobs die Actions aus genau der Version, die das Projekt aufruft.
+      - name: Version von factory-pipelines bestimmen
+        id: ref
+        env:
+          FALLBACK_REF: ${{ inputs.pipelines_ref }}
+          FALLBACK_REPO: ${{ inputs.pipelines_repo }}
+        run: |
+          set -euo pipefail
+          sha=""; repo="$FALLBACK_REPO"
+          if [ -z "$FALLBACK_REF" ] && [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            token=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=factory-pipelines" | jq -r .value)
+            payload=$(printf '%s' "$token" | cut -d. -f2 | tr '_-' '/+')
+            case $(( ${#payload} % 4 )) in 2) payload="$payload==" ;; 3) payload="$payload=" ;; esac
+            claims=$(printf '%s' "$payload" | base64 -d)
+            sha=$(jq -r '.job_workflow_sha // empty' <<<"$claims")
+            wf=$(jq -r '.job_workflow_ref // empty' <<<"$claims")
+            [ -n "$wf" ] && repo="${wf%%/.github/*}"
+          fi
+          [ -n "$sha" ] || sha="$FALLBACK_REF"
+          [ -n "$sha" ] || { echo "::error::Version von factory-pipelines unbekannt: kein OIDC-Token (permissions: id-token: write) und kein pipelines_ref."; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+          echo "factory-pipelines: $repo@$sha"
+      - uses: actions/checkout@v4
+        with:
+          path: project
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.ref.outputs.repo }}
+          ref: ${{ steps.ref.outputs.sha }}
+          path: .pipelines
+          persist-credentials: false
+      - id: cfg
+        uses: ./.pipelines/actions/config
+        with:
+          config: ${{ inputs.config }}
+          working-directory: project/${{ inputs.working_directory }}
+
+  ci:
+    name: Checks, Image, Test-Umgebung
+    needs: setup
+    if: inputs.action == '' || inputs.action == 'deploy'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image_ref: ${{ steps.build.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: project
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.setup.outputs.pipelines_repo }}
+          ref: ${{ needs.setup.outputs.pipelines_sha }}
+          path: .pipelines
+          persist-credentials: false
+      - uses: ./.pipelines/actions/checks
+        with:
+          working-directory: project/${{ inputs.working_directory }}
+      - id: build
+        uses: ./.pipelines/actions/build-test
+        with:
+          working-directory: project/${{ inputs.working_directory }}
+          config: ${{ needs.setup.outputs.config }}
+          image: ${{ needs.setup.outputs.image }}
+          push: ${{ needs.setup.outputs.deploy_on_push == 'true' && ((github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) || inputs.action == 'deploy') }}
+          registry-token: ${{ github.token }}
+
+  deploy-staging:
+    name: Deploy staging
+    needs: [setup, ci]
+    if: >-
+      needs.ci.outputs.image_ref != '' && needs.setup.outputs.staging == 'true' &&
+      ((github.event_name == 'push' && fromJSON(needs.setup.outputs.config).environments.staging.autoDeploy) ||
+       (inputs.action == 'deploy' && inputs.environment == 'staging'))
+    runs-on: ubuntu-latest
+    environment: staging
+    concurrency:
+      group: factory-deploy-staging
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+      packages: read
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: project
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.setup.outputs.pipelines_repo }}
+          ref: ${{ needs.setup.outputs.pipelines_sha }}
+          path: .pipelines
+          persist-credentials: false
+      - uses: ./.pipelines/actions/deploy-env
+        with:
+          verb: deploy
+          environment: staging
+          working-directory: project/${{ inputs.working_directory }}
+          config: ${{ needs.setup.outputs.config }}
+          language: ${{ needs.setup.outputs.language }}
+          image: ${{ needs.ci.outputs.image_ref }}
+          infisical-project-id: ${{ vars.INFISICAL_PROJECT_ID }}
+          infisical-identity-id: ${{ vars.INFISICAL_IDENTITY_ID }}
+          registry-token: ${{ github.token }}
+          github-token: ${{ github.token }}
+
+  deploy-production:
+    name: Deploy production
+    needs: [setup, ci, deploy-staging]
+    if: >-
+      always() && needs.ci.result == 'success' && needs.ci.outputs.image_ref != '' &&
+      needs.setup.outputs.production == 'true' &&
+      (needs.deploy-staging.result == 'success' || needs.deploy-staging.result == 'skipped') &&
+      (github.event_name == 'push' || (inputs.action == 'deploy' && inputs.environment == 'production'))
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: factory-deploy-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+      packages: read
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: project
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.setup.outputs.pipelines_repo }}
+          ref: ${{ needs.setup.outputs.pipelines_sha }}
+          path: .pipelines
+          persist-credentials: false
+      - uses: ./.pipelines/actions/deploy-env
+        with:
+          verb: deploy
+          environment: production
+          working-directory: project/${{ inputs.working_directory }}
+          config: ${{ needs.setup.outputs.config }}
+          language: ${{ needs.setup.outputs.language }}
+          image: ${{ needs.ci.outputs.image_ref }}
+          infisical-project-id: ${{ vars.INFISICAL_PROJECT_ID }}
+          infisical-identity-id: ${{ vars.INFISICAL_IDENTITY_ID }}
+          registry-token: ${{ github.token }}
+          github-token: ${{ github.token }}
+
+  operate:
+    name: ${{ inputs.action }} ${{ inputs.environment }}
+    needs: setup
+    if: inputs.action == 'rollback' || inputs.action == 'restore'
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: factory-deploy-${{ inputs.environment }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Eingaben prüfen
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          case "$ENVIRONMENT" in staging|production) ;; *) echo "::error::environment muss staging oder production sein"; exit 1 ;; esac
+      - uses: actions/checkout@v4
+        with:
+          path: project
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.setup.outputs.pipelines_repo }}
+          ref: ${{ needs.setup.outputs.pipelines_sha }}
+          path: .pipelines
+          persist-credentials: false
+      - uses: ./.pipelines/actions/deploy-env
+        with:
+          verb: ${{ inputs.action }}
+          environment: ${{ inputs.environment }}
+          working-directory: project/${{ inputs.working_directory }}
+          config: ${{ needs.setup.outputs.config }}
+          language: ${{ needs.setup.outputs.language }}
+          snapshot: ${{ inputs.snapshot }}
+          infisical-project-id: ${{ vars.INFISICAL_PROJECT_ID }}
+          infisical-identity-id: ${{ vars.INFISICAL_IDENTITY_ID }}
+          github-token: ${{ github.token }}

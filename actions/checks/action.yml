@@ -1,0 +1,25 @@
+name: factory-checks
+description: Führt install und alle Checks aus .factory/setup.json aus, genau wie factory-verify in der Factory.
+inputs:
+  working-directory:
+    default: project
+runs:
+  using: composite
+  steps:
+    - name: Node einrichten (.nvmrc)
+      if: hashFiles(format('{0}/package.json', inputs.working-directory)) != '' && hashFiles(format('{0}/.nvmrc', inputs.working-directory)) != ''
+      uses: actions/setup-node@v4
+      with:
+        node-version-file: ${{ inputs.working-directory }}/.nvmrc
+    - name: Node einrichten (LTS)
+      if: hashFiles(format('{0}/package.json', inputs.working-directory)) != '' && hashFiles(format('{0}/.nvmrc', inputs.working-directory)) == ''
+      uses: actions/setup-node@v4
+      with:
+        node-version: lts/*
+    - name: uv einrichten
+      if: hashFiles(format('{0}/pyproject.toml', inputs.working-directory)) != ''
+      uses: astral-sh/setup-uv@v6
+    - name: Checks
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: '"$GITHUB_ACTION_PATH/run-checks.sh"'

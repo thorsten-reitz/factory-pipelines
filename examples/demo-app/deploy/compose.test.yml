@@ -1,0 +1,39 @@
+# Test-Umgebung in CI: das frisch gebaute Image mit Wegwerf-Datenbank. Die Werte hier sind
+# Testwerte, keine Secrets. IMAGE setzt die Pipeline.
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_DB: app
+      POSTGRES_PASSWORD: test
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  migrate:
+    image: ${IMAGE}
+    command: ["node", "migrate.js"]
+    environment:
+      DATABASE_URL: postgres://app:test@db:5432/app
+    depends_on:
+      db:
+        condition: service_healthy
+
+  app:
+    image: ${IMAGE}
+    environment:
+      DATABASE_URL: postgres://app:test@db:5432/app
+      HEALTH_TOKEN: test-health-token
+    ports:
+      - "8080:3000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/readyz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 2s
+      timeout: 3s
+      retries: 30

@@ -1,0 +1,67 @@
+# Compose-Datei für staging und production (Stufe compose). factory-host setzt beim Deploy:
+#   IMAGE (mit Digest), PROJECT_ENV (z. B. demo-staging), PORT, SECRETS_DIR, FACTORY_BIN
+# Secrets kommen als Dateien aus ${SECRETS_DIR}/${PROJECT_ENV}/ (tmpfs) und werden von with-secrets
+# beim Start als Umgebungsvariablen gesetzt. Hier steht kein einziger geheimer Wert.
+x-secrets: &secrets
+  - ${SECRETS_DIR}/${PROJECT_ENV}:/run/secrets/app:ro
+  - ${FACTORY_BIN}/with-secrets:/factory/with-secrets:ro
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_DB: app
+      POSTGRES_PASSWORD_FILE: /run/secrets/app/POSTGRES_PASSWORD
+    volumes:
+      - db:/var/lib/postgresql/data
+      - ${SECRETS_DIR}/${PROJECT_ENV}:/run/secrets/app:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  # Läuft beim Deploy vor dem Umschalten (factory-host: --profile migrate run --rm migrate)
+  migrate:
+    image: ${IMAGE}
+    profiles: [migrate]
+    entrypoint: ["/factory/with-secrets"]
+    command: ["node", "migrate.js"]
+    volumes: *secrets
+    depends_on:
+      db:
+        condition: service_healthy
+
+  app:
+    image: ${IMAGE}
+    restart: unless-stopped
+    entrypoint: ["/factory/with-secrets"]
+    command: ["node", "server.js"]
+    ports:
+      - "127.0.0.1:${PORT}:3000"
+    volumes:
+      - uploads:/data/uploads
+      - ${SECRETS_DIR}/${PROJECT_ENV}:/run/secrets/app:ro
+      - ${FACTORY_BIN}/with-secrets:/factory/with-secrets:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/livez').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+volumes:
+  db: {}
+  uploads: {}

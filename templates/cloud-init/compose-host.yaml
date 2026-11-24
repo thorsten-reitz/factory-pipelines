@@ -1,0 +1,53 @@
+#cloud-config
+# Deploy-Host für die Stufe compose (Ubuntu 24.04 oder neuer). Beim Anlegen des Servers als
+# User-Data angeben; danach ist kein SSH-Login nötig. Platzhalter <...> vorher ersetzen:
+#
+#   <VERSION>                  Tag von factory-pipelines, z. B. v0.1.0
+#   <DEPLOY_PUBKEY>            öffentlicher Deploy-Schlüssel; der private liegt als DEPLOY_SSH_KEY in Infisical
+#   <ACME_EMAIL>               E-Mail für Let's-Encrypt-Zertifikate
+#   <INFISICAL_CLIENT_ID>      Maschinen-Identität des Hosts (Universal Auth)
+#   <INFISICAL_CLIENT_SECRET>  dazugehöriges Client-Secret
+#
+# Das Client-Secret wird beim ersten Start mit systemd-creds verschlüsselt und im Klartext gelöscht.
+# Die User-Data bleibt aber beim Anbieter abrufbar: danach in Infisical ein neues Client-Secret erzeugen,
+# das alte widerrufen (siehe README, Abschnitt "Host-Identität").
+# Den öffentlichen Host-Schlüssel (/etc/ssh/ssh_host_ed25519_key.pub, steht im Boot-Log des Anbieters)
+# als DEPLOY_HOST_KEY in Infisical eintragen.
+
+package_update: true
+package_upgrade: true
+packages:
+  - docker.io
+  - docker-compose-v2
+  - caddy
+  - jq
+  - curl
+  - ufw
+  - fail2ban
+  - unattended-upgrades
+
+write_files:
+  - path: /etc/caddy/Caddyfile
+    content: |
+      {
+        email <ACME_EMAIL>
+      }
+      import /etc/caddy/sites.d/*.caddy
+  - path: /etc/factory-host/bootstrap/infisical-client-id
+    permissions: "0600"
+    content: <INFISICAL_CLIENT_ID>
+  - path: /etc/factory-host/bootstrap/infisical-client-secret
+    permissions: "0600"
+    content: <INFISICAL_CLIENT_SECRET>
+  - path: /etc/ssh/sshd_config.d/10-factory.conf
+    content: |
+      PasswordAuthentication no
+      PermitRootLogin prohibit-password
+
+runcmd:
+  - [sh, -c, "ufw allow 22/tcp && ufw allow 80/tcp && ufw allow 443/tcp && ufw --force enable"]
+  - [sh, -c, "systemctl enable --now docker fail2ban unattended-upgrades && systemctl reload ssh"]
+  - [sh, -c, "mkdir -p /etc/caddy/sites.d && systemctl restart caddy"]
+  - [sh, -c, "curl -1sLf https://artifacts-cli.infisical.com/setup.deb.sh | bash && apt-get install -y infisical"]
+  - [sh, -c, "curl -fsSL https://github.com/thorsten-reitz/factory-pipelines/archive/refs/tags/<VERSION>.tar.gz | tar -xz -C /opt"]
+  - [sh, -c, "/opt/factory-pipelines-*/host/install.sh --pubkey '<DEPLOY_PUBKEY>' --secrets-provider infisical --infisical-domain https://eu.infisical.com"]

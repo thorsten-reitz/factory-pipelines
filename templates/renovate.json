@@ -1,0 +1,12 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "packageRules": [
+    {
+      "description": "factory-pipelines: Updates gebündelt, nie automatisch mergen",
+      "matchPackageNames": ["thorsten-reitz/factory-pipelines"],
+      "groupName": "factory-pipelines",
+      "automerge": false
+    }
+  ]
+}

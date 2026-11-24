@@ -1,0 +1,10 @@
+# Als .dockerignore ins Projekt kopieren und um projektspezifische Einträge ergänzen
+.git
+node_modules
+.factory
+.github
+deploy
+docs
+features
+*.md
+.env*

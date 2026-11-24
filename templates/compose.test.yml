@@ -1,0 +1,35 @@
+# deploy/compose.test.yml im Projekt: Test-Umgebung in CI (environments.test).
+# Das frisch gebaute Image (IMAGE) mit Wegwerf-Diensten. Die Werte hier sind Testwerte, keine Secrets.
+# Die App muss unter environments.test.url erreichbar sein (Standard http://localhost:8080).
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_DB: app
+      POSTGRES_PASSWORD: test
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  migrate:
+    image: ${IMAGE}
+    command: ["npm", "run", "migrate"]
+    environment:
+      DATABASE_URL: postgres://app:test@db:5432/app
+    depends_on:
+      db:
+        condition: service_healthy
+
+  app:
+    image: ${IMAGE}
+    environment:
+      DATABASE_URL: postgres://app:test@db:5432/app
+      HEALTH_TOKEN: test-health-token
+    ports:
+      - "8080:3000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully

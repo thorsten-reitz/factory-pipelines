@@ -1,0 +1,42 @@
+# Baut das Backup-Image und veröffentlicht es in GHCR:
+#   main          → :main
+#   Tag vX.Y.Z    → :vX.Y.Z und :vX
+name: publish
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  backup-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - id: tags
+        run: |
+          IMG="ghcr.io/${GITHUB_REPOSITORY,,}/backup"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            V="${GITHUB_REF#refs/tags/}"
+            echo "tags=$IMG:$V,$IMG:${V%%.*}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tags=$IMG:main" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: docker/build-push-action@v6
+        with:
+          context: images/backup
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -1,0 +1,9 @@
+[Unit]
+Description=Factory: Backup aller Apps nach S3 (restic)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=deploy
+ExecStart=/opt/factory/bin/factory-host backup-all

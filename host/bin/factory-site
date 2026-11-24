@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# factory-site <projekt-umgebung> <domain> <port>
+# Läuft als root (für deploy per sudoers freigegeben). Schreibt den Caddy-Site-Block der App nach
+# $SITES_DIR/<projekt-umgebung>.caddy und lädt Caddy neu, wenn sich etwas geändert hat.
+# Auf dem Factory-Server ist SITES_DIR=/etc/software-factory/sites.d; dort übernimmt der Runner die Datei.
+set -euo pipefail
+FACTORY_LIB="${FACTORY_LIB:-$(cd "$(dirname "$(readlink -f "$0")")/../lib" && pwd)}"
+# shellcheck source=../lib/common.sh
+. "$FACTORY_LIB/common.sh"
+load_host_env
+
+NAME="${1:-}"; DOMAIN="${2:-}"; PORT="${3:-}"
+[[ "$NAME" =~ ^[a-z0-9][a-z0-9-]{0,39}-(staging|production)$ ]] || die "Ungültiger App-Name"
+valid_domain "$DOMAIN" || die "Ungültige Domain"
+valid_port "$PORT" || die "Ungültiger Port"
+
+mkdir -p "$SITES_DIR"
+FILE="$SITES_DIR/$NAME.caddy"
+NEW=$(cat <<EOF
+# Erzeugt von factory-site für $NAME. Nicht von Hand ändern, wird beim Deploy überschrieben.
+$DOMAIN {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:$PORT
+}
+EOF
+)
+if [ -f "$FILE" ] && [ "$(cat "$FILE")" = "$NEW" ]; then exit 0; fi
+printf '%s\n' "$NEW" > "$FILE.tmp" && mv -f "$FILE.tmp" "$FILE"
+log "Caddy-Site für $DOMAIN geschrieben"
+bash -c "$CADDY_RELOAD" || die "Caddy neu laden fehlgeschlagen ($CADDY_RELOAD)"

@@ -1,0 +1,8 @@
+[Unit]
+Description=Factory: Heartbeat aller Apps an den Watchdog (nur wenn /readyz grün ist)
+After=docker.service
+
+[Service]
+Type=oneshot
+User=deploy
+ExecStart=/opt/factory/bin/factory-host heartbeat-all

@@ -1,0 +1,40 @@
+name: factory-config
+description: Prüft .factory/delivery.json gegen das Schema, ergänzt Standardwerte und gibt die Konfiguration aus.
+inputs:
+  config:
+    description: Pfad zur delivery.json (relativ zum Arbeitsverzeichnis)
+    default: .factory/delivery.json
+  working-directory:
+    description: Projektordner
+    default: project
+outputs:
+  config:
+    description: Vollständige Konfiguration als kompaktes JSON
+    value: ${{ steps.config.outputs.config }}
+  project:
+    value: ${{ steps.config.outputs.project }}
+  tier:
+    value: ${{ steps.config.outputs.tier }}
+  language:
+    value: ${{ steps.config.outputs.language }}
+  image:
+    description: Image-Name ohne Tag, z. B. ghcr.io/owner/repo
+    value: ${{ steps.config.outputs.image }}
+  staging:
+    description: "'true', wenn staging konfiguriert ist"
+    value: ${{ steps.config.outputs.staging }}
+  production:
+    description: "'true', wenn production konfiguriert ist"
+    value: ${{ steps.config.outputs.production }}
+  deploy_on_push:
+    description: "'true', wenn ein Push auf den Standard-Branch ein Deploy auslöst (dann wird das Image gepusht)"
+    value: ${{ steps.config.outputs.deploy_on_push }}
+runs:
+  using: composite
+  steps:
+    - id: config
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        CONFIG: ${{ inputs.config }}
+      run: '"$GITHUB_ACTION_PATH/config.sh" "$CONFIG" "$GITHUB_ACTION_PATH/../../schema"'

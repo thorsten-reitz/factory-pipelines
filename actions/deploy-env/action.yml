@@ -1,0 +1,89 @@
+name: factory-deploy-env
+description: Deploy, Rollback oder Restore einer Umgebung (Stufe compose) per SSH auf den Host, danach Health-Check von außen und Meldung im PR bzw. Issue.
+inputs:
+  verb:
+    description: deploy | rollback | restore
+    default: deploy
+  environment:
+    description: staging oder production
+    required: true
+  working-directory:
+    default: project
+  config:
+    description: Vollständige Konfiguration (Ausgabe von factory-config)
+    required: true
+  language:
+    default: de
+  image:
+    description: Image-Referenz mit Digest (nur deploy)
+    default: ""
+  compose-file:
+    default: deploy/compose.yml
+  snapshot:
+    description: "Nur restore: latest, YYYY-MM-DD oder YYYY-MM-DDTHH:MM (neuester Stand bis dahin)"
+    default: latest
+  secrets-provider:
+    default: infisical
+  infisical-project-id:
+    default: ""
+  infisical-identity-id:
+    default: ""
+  test-secrets:
+    default: "{}"
+  registry-token:
+    description: Token, mit dem der Host das Image einmalig zieht (GHCR: GITHUB_TOKEN). Wird auf dem Host nicht gespeichert.
+    default: ""
+  github-token:
+    description: Für Kommentare und deploy-failed-Issues
+    default: ""
+  notify:
+    description: "'false' schaltet Kommentare und Issues ab"
+    default: "true"
+runs:
+  using: composite
+  steps:
+    - name: Secrets der Umgebung
+      uses: ./.pipelines/actions/secrets
+      with:
+        provider: ${{ inputs.secrets-provider }}
+        environment: ${{ inputs.environment }}
+        infisical-project-id: ${{ inputs.infisical-project-id }}
+        infisical-identity-id: ${{ inputs.infisical-identity-id }}
+        test-secrets: ${{ inputs.test-secrets }}
+    - name: ${{ inputs.verb }} auf ${{ inputs.environment }}
+      id: run
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        VERB: ${{ inputs.verb }}
+        ENVIRONMENT: ${{ inputs.environment }}
+        CONFIG: ${{ inputs.config }}
+        IMAGE: ${{ inputs.image }}
+        COMPOSE_FILE: ${{ inputs.compose-file }}
+        SNAPSHOT: ${{ inputs.snapshot }}
+        INFISICAL_PROJECT_ID: ${{ inputs.infisical-project-id }}
+        REGISTRY_TOKEN: ${{ inputs.registry-token }}
+        REGISTRY_USER: ${{ github.actor }}
+        COMMIT: ${{ github.sha }}
+      run: '"$GITHUB_ACTION_PATH/deploy.sh"'
+    - name: Health-Check von außen
+      id: health
+      if: inputs.verb != 'restore'
+      shell: bash
+      env:
+        CONFIG: ${{ inputs.config }}
+        ENVIRONMENT: ${{ inputs.environment }}
+      run: '"$GITHUB_ACTION_PATH/health-gate.sh"'
+    - name: Melden
+      if: always() && inputs.notify == 'true' && inputs.github-token != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        RESULT: ${{ steps.run.outcome == 'success' && steps.health.outcome != 'failure' && 'success' || 'failure' }}
+        VERB: ${{ inputs.verb }}
+        ENVIRONMENT: ${{ inputs.environment }}
+        LANGUAGE: ${{ inputs.language }}
+        IMAGE: ${{ inputs.image }}
+        COMMIT: ${{ github.sha }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: '"$GITHUB_ACTION_PATH/notify.sh"'

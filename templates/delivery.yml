@@ -1,0 +1,40 @@
+# .github/workflows/delivery.yml im Projekt. Die Logik liegt in factory-pipelines; hier nur der Aufruf.
+# Version anheben: Renovate öffnet dafür einen PR (templates/renovate.json).
+name: delivery
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Aktion
+        type: choice
+        options: [deploy, rollback, restore]
+        default: deploy
+      environment:
+        description: Umgebung
+        type: choice
+        options: [staging, production]
+        default: staging
+      snapshot:
+        description: "Nur restore: latest, YYYY-MM-DD oder YYYY-MM-DDTHH:MM"
+        type: string
+        default: latest
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  delivery:
+    uses: thorsten-reitz/factory-pipelines/.github/workflows/delivery.yml@v0.1.0
+    with:
+      config: .factory/delivery.json
+      action: ${{ inputs.action }}
+      environment: ${{ inputs.environment }}
+      snapshot: ${{ inputs.snapshot }}

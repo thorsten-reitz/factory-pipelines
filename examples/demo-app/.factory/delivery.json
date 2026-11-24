@@ -1,0 +1,14 @@
+{
+  "$schema": "../../../schema/delivery.schema.json",
+  "project": "demo",
+  "tier": "compose",
+  "environments": {
+    "test": { "e2e": true, "services": "deploy/compose.test.yml", "url": "http://localhost:8080" },
+    "staging": { "port": 5101, "autoDeploy": false }
+  },
+  "state": [
+    { "type": "postgres", "service": "db" },
+    { "type": "volume", "name": "uploads" }
+  ],
+  "health": { "components": ["db", "storage"] }
+}
