@@ -12,7 +12,7 @@ Im Projekt liegen nur ein kurzer Aufruf und eine Konfigurationsdatei:
 # .github/workflows/delivery.yml   (Vorlage: templates/delivery.yml)
 jobs:
   delivery:
-    uses: thorsten-reitz/factory-pipelines/.github/workflows/delivery.yml@v0.2.0
+    uses: thorsten-reitz/factory-pipelines/.github/workflows/delivery.yml@v0.3.0
     with:
       config: .factory/delivery.json
 ```
@@ -137,8 +137,8 @@ Neuen Server mit [`templates/cloud-init/compose-host.yaml`](templates/cloud-init
 Auf dem **Factory-Server** (dort läuft Caddy schon als Teil der Factory) einmalig:
 
 ```bash
-curl -fsSL https://github.com/thorsten-reitz/factory-pipelines/archive/refs/tags/v0.2.0.tar.gz | tar -xz -C /opt
-/opt/factory-pipelines-0.2.0/host/install.sh --pubkey "ssh-ed25519 AAAA… deploy" \
+curl -fsSL https://github.com/thorsten-reitz/factory-pipelines/archive/refs/tags/v0.3.0.tar.gz | tar -xz -C /opt
+/opt/factory-pipelines-0.3.0/host/install.sh --pubkey "ssh-ed25519 AAAA… deploy" \
   --sites-dir /etc/software-factory/sites.d --caddy-reload true
 ```
 
