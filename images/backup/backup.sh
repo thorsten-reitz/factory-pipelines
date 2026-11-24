@@ -41,7 +41,7 @@ ensure_repo() {
   # restic wiederholt vermeintlich vorübergehende Fehler bis zu 15 Minuten ohne Ausgabe: deshalb ein Zeitlimit
   if out=$(timeout 120 restic cat config 2>&1 >/dev/null); then return 0; fi
   case "$out" in
-    *"does not exist"*|*"unable to open config file"*|*NoSuchKey*|*"key does not exist"*) ;;
+    *"does not exist"*|*"unable to open config file"*|*NoSuchKey*) ;;
     *) log "restic erreicht das Repository nicht: $(printf '%s' "$out" | tail -5)"; die "Backup-Ziel nicht erreichbar" ;;
   esac
   log "restic-Repository anlegen"
