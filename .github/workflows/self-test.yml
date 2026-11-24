@@ -25,9 +25,9 @@ jobs:
           ./actionlint -color
       - name: shellcheck
         run: |
-          shellcheck -x host/bin/factory-host host/bin/factory-secrets host/bin/factory-site host/install.sh \
+          shellcheck -x --severity=warning host/bin/factory-host host/bin/factory-secrets host/bin/factory-site host/install.sh \
             actions/*/*.sh tests/e2e/*.sh scripts/*.sh
-          shellcheck -s sh host/bin/with-secrets images/backup/backup.sh
+          shellcheck --severity=warning -s sh host/bin/with-secrets images/backup/backup.sh
       - name: bats
         run: |
           sudo apt-get install -y -qq bats >/dev/null

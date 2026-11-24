@@ -5,7 +5,7 @@
 # Auf dem Factory-Server ist SITES_DIR=/etc/software-factory/sites.d; dort übernimmt der Runner die Datei.
 set -euo pipefail
 FACTORY_LIB="${FACTORY_LIB:-$(cd "$(dirname "$(readlink -f "$0")")/../lib" && pwd)}"
-# shellcheck source=../lib/common.sh
+# shellcheck source=host/lib/common.sh
 . "$FACTORY_LIB/common.sh"
 load_host_env
 
