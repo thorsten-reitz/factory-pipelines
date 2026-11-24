@@ -31,7 +31,7 @@ inputs:
   test-secrets:
     default: "{}"
   registry-token:
-    description: Token, mit dem der Host das Image einmalig zieht (GHCR: GITHUB_TOKEN). Wird auf dem Host nicht gespeichert.
+    description: "Token, mit dem der Host das Image einmalig zieht (GHCR: GITHUB_TOKEN). Wird auf dem Host nicht gespeichert."
     default: ""
   github-token:
     description: Für Kommentare und deploy-failed-Issues

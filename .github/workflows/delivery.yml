@@ -66,10 +66,10 @@ jobs:
         id: ref
         env:
           FALLBACK_REF: ${{ inputs.pipelines_ref }}
-          FALLBACK_REPO: ${{ inputs.pipelines_repo }}
+          DEFAULT_REPO: ${{ inputs.pipelines_repo }}
         run: |
           set -euo pipefail
-          sha=""; repo="$FALLBACK_REPO"
+          sha=""; repo="$DEFAULT_REPO"
           if [ -z "$FALLBACK_REF" ] && [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
             token=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
               "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=factory-pipelines" | jq -r .value)

@@ -13,7 +13,7 @@ inputs:
     description: "'true': Image in die Registry pushen"
     default: "false"
   registry-token:
-    description: Token für die Registry (GHCR: GITHUB_TOKEN)
+    description: "Token für die Registry (GHCR: GITHUB_TOKEN)"
     default: ""
 outputs:
   ref:

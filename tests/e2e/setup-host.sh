@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Selbsttest: macht den GitHub-Runner zu einem Deploy-Host (Stufe compose).
-# Lokale Registry statt GHCR, MinIO statt S3, Secrets-Provider "file" statt Infisical.
+# Lokale Registry statt GHCR, SeaweedFS (S3-Gateway) statt S3, Secrets-Provider "file" statt Infisical.
 # Schreibt nach $GITHUB_OUTPUT: good, broken (Image-Referenzen mit Digest), secrets (Test-Secrets für deploy-env).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -8,11 +8,13 @@ APP="$ROOT/examples/demo-app"
 COMMIT="${GITHUB_SHA:?}"
 OUT="${GITHUB_OUTPUT:-/dev/stdout}"
 
-echo "::group::Registry und MinIO"
+echo "::group::Registry und S3"
 docker run -d --name registry -p 5000:5000 registry:2 >/dev/null
-docker run -d --name minio -p 9000:9000 -e MINIO_ROOT_USER=e2e-access -e MINIO_ROOT_PASSWORD=e2e-secret-key-123 \
-  minio/minio:RELEASE.2025-04-22T22-12-26Z server /data >/dev/null
-for _ in $(seq 1 30); do curl -fsS http://localhost:9000/minio/health/live >/dev/null 2>&1 && break; sleep 1; done
+# Ohne konfigurierte Identitäten nimmt das S3-Gateway von SeaweedFS jede Anfrage an: genug für den Test
+docker run -d --name s3 -p 8333:8333 chrislusf/seaweedfs:4.50 \
+  server -dir=/data -s3 -s3.port=8333 -master.volumeSizeLimitMB=256 >/dev/null
+for _ in $(seq 1 60); do curl -s -o /dev/null http://localhost:8333/ && break; sleep 1; done
+curl -s -o /dev/null -w "S3-Gateway antwortet (HTTP %{http_code})\n" http://localhost:8333/
 echo "::endgroup::"
 
 echo "::group::Images bauen"
@@ -40,7 +42,7 @@ jq -n --arg pw "$PG_PW" --arg ht "$(openssl rand -hex 16)" --arg rp "$(openssl r
   POSTGRES_PASSWORD: $pw,
   DATABASE_URL: ("postgres://app:" + $pw + "@db:5432/app"),
   HEALTH_TOKEN: $ht,
-  RESTIC_REPOSITORY: "s3:http://host.docker.internal:9000/backups/demo-staging",
+  RESTIC_REPOSITORY: "s3:http://host.docker.internal:8333/backups/demo-staging",
   RESTIC_PASSWORD: $rp,
   AWS_ACCESS_KEY_ID: "e2e-access",
   AWS_SECRET_ACCESS_KEY: "e2e-secret-key-123"

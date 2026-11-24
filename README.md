@@ -134,7 +134,7 @@ Was der Host danach tut:
 
 - **lint:** actionlint, shellcheck, [bats-Tests](tests/host.bats) der Host-Skripte, Schema, Compose-Dateien
 - **delivery:** der echte `delivery.yml` mit der [Demo-App](examples/demo-app): Konfiguration, Checks, Image, Test-Umgebung, E2E
-- **host-e2e:** der Runner als Deploy-Host (lokale Registry, MinIO als S3, Test-Secrets): Deploy, kaputtes Image mit automatischem Rollback, manueller Rollback, Backup, Restore, Restore-Test
+- **host-e2e:** der Runner als Deploy-Host (lokale Registry, SeaweedFS als S3, Test-Secrets): Deploy, kaputtes Image mit automatischem Rollback, manueller Rollback, Backup, Restore, Restore-Test
 
 Nicht im Selbsttest, erst im Pilotprojekt geprüft: die echte Anbindung an Infisical (OIDC in Actions, Universal Auth auf dem Host), GHCR-Pull mit Token, Caddy mit echter Domain.
 

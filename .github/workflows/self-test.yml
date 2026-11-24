@@ -2,7 +2,7 @@
 #   lint        actionlint, shellcheck, bats (Host-Skripte), Schema und Compose-Dateien
 #   delivery    der echte delivery.yml mit der Demo-App: Konfiguration, Checks, Image, Test-Umgebung, E2E
 #   host-e2e    der Runner als Deploy-Host: Deploy, kaputtes Image mit automatischem Rollback,
-#               manueller Rollback, Backup nach S3 (MinIO), Restore, Restore-Test
+#               manueller Rollback, Backup nach S3 (SeaweedFS), Restore, Restore-Test
 name: self-test
 
 on:
@@ -133,7 +133,7 @@ jobs:
           notify: "false"
       - run: bash .pipelines/tests/e2e/check.sh healthy "${{ steps.host.outputs.good }}"
 
-      - name: 4. Backup nach S3 (MinIO)
+      - name: 4. Backup nach S3 (SeaweedFS)
         run: sudo -u deploy /opt/factory/bin/factory-host backup-all
       - run: bash .pipelines/tests/e2e/check.sh wipe
       - name: 5. Restore per Workflow-Aktion
