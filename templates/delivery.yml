@@ -32,7 +32,7 @@ permissions:
 
 jobs:
   delivery:
-    uses: thorsten-reitz/factory-pipelines/.github/workflows/delivery.yml@v0.1.0
+    uses: thorsten-reitz/factory-pipelines/.github/workflows/delivery.yml@v0.1.1
     with:
       config: .factory/delivery.json
       action: ${{ inputs.action }}
