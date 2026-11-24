@@ -9,11 +9,22 @@ SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/null}"
 CHECKS=$(jq -er '.checks | select(type == "object") | to_entries | map(select((.value | type) == "string" and (.value | length) > 0)) | select(length > 0) | .[] | [.key, .value] | @tsv' "$SETUP") \
   || { echo "::error::$SETUP enthält keine Checks (\"checks\": {\"name\": \"befehl\"})."; exit 1; }
 
-# actionlint ist auf den Runnern nicht vorinstalliert, wird aber für Plattform-Checks gebraucht
-if grep -q actionlint <<<"$CHECKS" && ! command -v actionlint >/dev/null; then
-  echo "▶ actionlint installieren"
-  ( cd "$RUNNER_TEMP" && bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7 >/dev/null ) \
-    && echo "$RUNNER_TEMP" >> "$GITHUB_PATH" && export PATH="$RUNNER_TEMP:$PATH"
+# Werkzeuge der Plattform-Checks (conventions/README.md der Factory) sind auf den Runnern nicht
+# vorinstalliert. Installiert wird nur, was ein Check tatsächlich verwendet, in festen Versionen.
+TOOLS="${RUNNER_TEMP:-/tmp}/factory-tools"
+mkdir -p "$TOOLS"; export PATH="$TOOLS:$PATH"; [ -n "${GITHUB_PATH:-}" ] && echo "$TOOLS" >> "$GITHUB_PATH"
+uses() { grep -q "$1" <<<"$CHECKS" && ! command -v "$1" >/dev/null; }
+if uses actionlint; then
+  echo "▶ actionlint 1.7.7 installieren"
+  ( cd "$TOOLS" && bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7 >/dev/null )
+fi
+if uses check-jsonschema; then
+  echo "▶ check-jsonschema 0.33.0 installieren"
+  pipx install -q "check-jsonschema==0.33.0" >/dev/null
+fi
+if uses hadolint; then
+  echo "▶ hadolint 2.12.0 installieren"
+  curl -fsSL -o "$TOOLS/hadolint" https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64 && chmod +x "$TOOLS/hadolint"
 fi
 
 INSTALL=$(jq -r '.install // empty' "$SETUP")

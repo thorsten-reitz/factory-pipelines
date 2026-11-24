@@ -5,6 +5,8 @@
 #     von with-secrets beim Start als Umgebungsvariablen gesetzt (Dienste mit *_FILE-Unterstützung lesen sie direkt).
 #   - Die App lauscht nur auf 127.0.0.1:${PORT}; Caddy leitet die Domain dorthin.
 #   - Migrationen im Dienst "migrate" (Profil migrate), sie laufen beim Deploy vor dem Umschalten.
+#   - Synthetische Daten für staging im Dienst "seed" (Profil seed, idempotent), nur bei
+#     environments.staging.data = "seed"; läuft nach den Migrationen. Ohne Dienst "seed" passiert nichts.
 #   - Jeder Dienst mit Speicherlimit. Volumes mit Zustand stehen in .factory/delivery.json unter "state".
 services:
   db:
@@ -32,6 +34,18 @@ services:
     profiles: [migrate]
     entrypoint: ["/factory/with-secrets"]
     command: ["npm", "run", "migrate"]
+    volumes:
+      - ${SECRETS_DIR}/${PROJECT_ENV}:/run/secrets/app:ro
+      - ${FACTORY_BIN}/with-secrets:/factory/with-secrets:ro
+    depends_on:
+      db:
+        condition: service_healthy
+
+  seed:
+    image: ${IMAGE}
+    profiles: [seed]
+    entrypoint: ["/factory/with-secrets"]
+    command: ["npm", "run", "seed"]
     volumes:
       - ${SECRETS_DIR}/${PROJECT_ENV}:/run/secrets/app:ro
       - ${FACTORY_BIN}/with-secrets:/factory/with-secrets:ro

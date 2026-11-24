@@ -38,6 +38,17 @@ services:
       db:
         condition: service_healthy
 
+  # Nur staging mit environments.staging.data = "seed": läuft nach den Migrationen, idempotent
+  seed:
+    image: ${IMAGE}
+    profiles: [seed]
+    entrypoint: ["/factory/with-secrets"]
+    command: ["node", "seed.js"]
+    volumes: *secrets
+    depends_on:
+      db:
+        condition: service_healthy
+
   app:
     image: ${IMAGE}
     restart: unless-stopped

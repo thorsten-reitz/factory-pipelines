@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Prüfschritte des Selbsttests gegen die App demo-staging auf dem Runner-Host.
 #   check.sh healthy <image-ref>   läuft die erwartete Version, und ist /health in Ordnung?
-#   check.sh seed | wipe | seeded
+#   check.sh seed-data | fill | wipe | seeded
 set -euo pipefail
 BASE=http://127.0.0.1:5101
 TOKEN=$(cat /run/secrets/demo-staging/HEALTH_TOKEN)
@@ -19,7 +19,11 @@ case "$1" in
     [ "$(jq -r .status <<<"$body")" = ok ] || { echo "::error::/health nicht ok"; exit 1; }
     [ "$(jq -r .commit <<<"$body")" = "$GITHUB_SHA" ] || { echo "::error::falscher Commit in /health"; exit 1; }
     ;;
-  seed)
+  seed-data)
+    curl -fsS "$BASE/notes" | jq -e 'any(.[]; .text == "beispiel-aus-seed")' >/dev/null || { echo "::error::Seed-Daten fehlen"; exit 1; }
+    echo "Seed-Daten vorhanden"
+    ;;
+  fill)
     curl -fsS -X POST -d '{"text":"vor-dem-backup"}' "$BASE/notes" >/dev/null
     curl -fsS -X PUT --data-binary 'inhalt-vor-dem-backup' "$BASE/files/backup.txt" >/dev/null
     ;;

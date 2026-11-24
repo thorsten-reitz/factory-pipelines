@@ -190,6 +190,18 @@ do_deploy() {
     dc "$rel" --profile migrate run --rm migrate || die "Migration fehlgeschlagen, die bisherige Version läuft weiter"
   fi
 
+  # staging mit synthetischen Daten: Dienst "seed" (Profil seed) nach den Migrationen, muss idempotent sein
+  if [ "$ENVIRONMENT" = staging ]; then
+    case "$(json_get "$rel/delivery.json" '.environments.staging.data')" in
+      seed|"")
+        if dc "$rel" --profile seed config --services | grep -qx seed; then
+          log "Seed-Daten einspielen"
+          dc "$rel" --profile seed run --rm seed || die "Seed fehlgeschlagen, die bisherige Version läuft weiter"
+        fi ;;
+      anonymized-copy) log "Hinweis: environments.staging.data=anonymized-copy ist in dieser Version noch nicht umgesetzt" ;;
+    esac
+  fi
+
   log "Umschalten auf $(basename "$rel")"
   set_link "$APP/current" "$rel"
   if dc "$rel" up -d --remove-orphans && wait_healthy "$rel"; then

@@ -54,9 +54,9 @@ Der SSH-Schlüssel kann nur `deploy`, `rollback`, `restore` und `status` auslös
 | Datei | Zweck |
 |---|---|
 | `.factory/delivery.json` | Betriebsschalter, Schema: [`schema/delivery.schema.json`](schema/delivery.schema.json), Beispiel: [`templates/delivery.example.json`](templates/delivery.example.json) |
-| `.factory/setup.json` | `install`, `checks`, optional `e2e` (bekommt `BASE_URL`) |
+| `.factory/setup.json` | `install`, `checks`, optional `e2e` (bekommt `BASE_URL`). Werkzeuge der Plattform-Checks (`actionlint`, `check-jsonschema`, `hadolint`) installiert die Pipeline selbst, wenn ein Check sie verwendet |
 | `Dockerfile` | nimmt `ARG GIT_COMMIT` und `ARG APP_VERSION` an und gibt sie über `/health` aus |
-| `deploy/compose.yml` | staging/production, Vorlage: [`templates/compose.yml`](templates/compose.yml) |
+| `deploy/compose.yml` | staging/production, Vorlage: [`templates/compose.yml`](templates/compose.yml). Dienste mit festen Namen: `migrate` (Profil `migrate`, vor dem Umschalten), `seed` (Profil `seed`, nur staging mit `data: "seed"`, idempotent) |
 | `deploy/compose.test.yml` | Test-Umgebung in CI, Vorlage: [`templates/compose.test.yml`](templates/compose.test.yml) |
 | `.github/workflows/delivery.yml` | Aufruf, Vorlage: [`templates/delivery.yml`](templates/delivery.yml) |
 | `.github/CODEOWNERS` | Review für `.github/`, `.factory/delivery.json`, `deploy/` |

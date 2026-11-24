@@ -46,7 +46,7 @@ jobs:
           FACTORY_BIN: /opt/factory/bin
         run: |
           for f in examples/demo-app/deploy/compose.yml templates/compose.yml; do
-            docker compose -f "$f" --profile migrate config --quiet && echo "✓ $f"
+            docker compose -f "$f" --profile migrate --profile seed config --quiet && echo "✓ $f"
           done
           for f in examples/demo-app/deploy/compose.test.yml templates/compose.test.yml; do
             docker compose -f "$f" config --quiet && echo "✓ $f"
@@ -91,7 +91,8 @@ jobs:
           test-secrets: ${{ steps.host.outputs.secrets }}
           notify: "false"
       - run: bash .pipelines/tests/e2e/check.sh healthy "${{ steps.host.outputs.good }}"
-      - run: bash .pipelines/tests/e2e/check.sh seed
+      - run: bash .pipelines/tests/e2e/check.sh seed-data
+      - run: bash .pipelines/tests/e2e/check.sh fill
 
       - name: 2. Deploy (kaputtes Image) – muss fehlschlagen und zurückrollen
         id: broken

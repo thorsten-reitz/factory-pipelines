@@ -4,7 +4,7 @@
   "dev": "PORT=$PORT node server.js",
   "e2e": "npm run e2e",
   "checks": {
-    "syntax": "node --check server.js && node --check migrate.js",
+    "syntax": "node --check server.js && node --check migrate.js && node --check seed.js",
     "test": "npm test"
   }
 }

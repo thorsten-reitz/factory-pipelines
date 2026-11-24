@@ -2,7 +2,7 @@ FROM node:22-alpine
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund
-COPY server.js migrate.js health.js ./
+COPY server.js migrate.js health.js seed.js ./
 COPY migrations ./migrations
 # Konvention: Commit und Version ins Image, /health meldet sie (der Deploy prüft den Commit)
 ARG GIT_COMMIT=unknown
