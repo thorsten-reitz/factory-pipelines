@@ -16,7 +16,10 @@ case "$VERB" in
 esac
 [ "$VERB" = deploy ] && { [ -f "$COMPOSE_FILE" ] || { echo "::error::$COMPOSE_FILE fehlt"; exit 1; }; }
 TIER=$(jq -r '.tier' <<<"$CONFIG")
-[ "$TIER" = compose ] || { echo "::error::Stufe '$TIER' wird in dieser Version noch nicht deployt (nur compose)."; exit 1; }
+case "$TIER" in
+  compose|kamal) ;;
+  *) echo "::error::Stufe '$TIER' wird in dieser Version noch nicht deployt (compose und kamal)."; exit 1 ;;
+esac
 
 WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
 mkdir "$WORK/bundle"

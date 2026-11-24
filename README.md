@@ -2,7 +2,7 @@
 
 Wiederverwendbare CI/CD-Workflows, Host-Skripte und Vorlagen für Projekte der [Software Factory](https://github.com/thorsten-reitz/software-factory). Umsetzung der Betriebskonventionen aus [`docs/proposals/betriebskonventionen.md`](https://github.com/thorsten-reitz/software-factory/blob/main/docs/proposals/betriebskonventionen.md).
 
-> **Version 0.1:** Stufe **compose** (Docker Compose + Caddy auf einer VM). Kamal und k3s folgen in 0.2 und 0.3.
+> **Version 0.2:** Stufen **compose** (Docker Compose + Caddy auf einer VM) und **kamal** (dasselbe ohne Unterbrechung beim Deploy, über kamal-proxy). k3s folgt in 0.3.
 
 ## Was ein Projekt davon hat
 
@@ -48,6 +48,18 @@ Kommentar im PR bzw. Issue "deploy-failed"
 ```
 
 Der SSH-Schlüssel kann nur `deploy`, `rollback`, `restore` und `status` auslösen, keine Shell. Mit `--allow` lässt er sich auf bestimmte Apps beschränken.
+
+## Stufen
+
+| `tier` | Umschalten | Unterbrechung beim Deploy |
+|---|---|---|
+| `compose` | `docker compose up`, der App-Container startet neu | wenige Sekunden |
+| `kamal` | neuer App-Container neben dem alten; [kamal-proxy](https://github.com/basecamp/kamal-proxy) leitet den Verkehr erst um, wenn `/readyz` grün ist, und wartet, bis der alte Container keine Anfragen mehr hat | keine |
+| `k3s` | folgt in 0.3 | – |
+
+Beide Stufen nutzen dieselbe `deploy/compose.yml`. In der Stufe `kamal` startet `factory-host` den Dienst `app` nicht mit `docker compose up`, sondern als eigenen Container pro Release; davor läuft je App und Umgebung ein kleiner kamal-proxy auf `127.0.0.1:<port>`. Caddy, Port, Health-Gate, Secrets, Backup und Seed sind identisch. Der Wechsel von `compose` zu `kamal` ist eine Zeile in `.factory/delivery.json`; beim ersten Deploy danach gibt es einmal eine kurze Unterbrechung.
+
+Die Stufe heißt `kamal`, verwendet aber nur den Proxy von Kamal, nicht die Kamal-CLI. Die CLI bräuchte einen SSH-Zugang mit Shell und Docker-Rechten (praktisch root); so bleibt der Deploy-Schlüssel auf die vier Aktionen beschränkt.
 
 ## Konventionen für das Projekt
 
@@ -134,7 +146,7 @@ Was der Host danach tut:
 
 - **lint:** actionlint, shellcheck, [bats-Tests](tests/host.bats) der Host-Skripte, Schema, Compose-Dateien
 - **delivery:** der echte `delivery.yml` mit der [Demo-App](examples/demo-app): Konfiguration, Checks, Image, Test-Umgebung, E2E
-- **host-e2e:** der Runner als Deploy-Host (lokale Registry, SeaweedFS als S3, Test-Secrets): Deploy, kaputtes Image mit automatischem Rollback, manueller Rollback, Backup, Restore, Restore-Test
+- **host-e2e:** der Runner als Deploy-Host, für beide Stufen (lokale Registry, SeaweedFS als S3, Test-Secrets): Deploy, kaputtes Image mit automatischem Rollback, manueller Rollback, Backup, Restore, Restore-Test; in der Stufe `kamal` zusätzlich der Nachweis, dass während Deploys und Rollback keine einzige Anfrage fehlschlägt
 
 Nicht im Selbsttest, erst im Pilotprojekt geprüft: die echte Anbindung an Infisical (OIDC in Actions, Universal Auth auf dem Host), GHCR-Pull mit Token, Caddy mit echter Domain.
 
@@ -144,9 +156,9 @@ Nicht im Selbsttest, erst im Pilotprojekt geprüft: die echte Anbindung an Infis
 
 Der Workflow lädt seine Actions aus genau dem Commit, den das Projekt aufruft (über `job_workflow_sha` im OIDC-Token). Version von Workflow und Actions können so nicht auseinanderlaufen.
 
-## Grenzen von 0.1
+## Grenzen von 0.2
 
-- Nur Stufe `compose`. `kamal` und `k3s` werden geprüft, aber nicht deployt.
+- Stufe `k3s` wird geprüft, aber noch nicht deployt.
 - Ein Image pro Projekt, eine Plattform (die erste aus `image.platforms`).
 - Point-in-Time-Recovery (`state[].pitr`) noch nicht umgesetzt.
 - Watchdog-Probe per GitHub Actions und Alloy-Konfiguration für Observability fehlen noch.

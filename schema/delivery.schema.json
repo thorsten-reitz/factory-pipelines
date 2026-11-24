@@ -14,7 +14,7 @@
       "pattern": "^[a-z0-9][a-z0-9-]{0,39}$"
     },
     "tier": {
-      "description": "Orchestrierungs-Stufe. v0.1 deployt nur 'compose'.",
+      "description": "Orchestrierungs-Stufe. compose: docker compose up (kurze Unterbrechung beim Deploy). kamal: ohne Unterbrechung, neuer App-Container neben dem alten, Umschalten per kamal-proxy (ohne Kamal-CLI). k3s: noch nicht deploybar.",
       "enum": ["compose", "kamal", "k3s"]
     },
     "provisioning": { "enum": ["cloud-init", "opentofu"] },

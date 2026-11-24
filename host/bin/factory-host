@@ -152,6 +152,74 @@ ping_check() {
   [ -n "$url" ] && curl -fsS -m 10 --retry 3 "${url%/}$suffix" >/dev/null 2>&1 || true
 }
 
+# ---------- Stufen: Release starten und Verkehr darauf leiten ----------
+
+tier_of() { json_get "$1/delivery.json" .tier; }
+
+# compose: docker compose up (kurze Unterbrechung, während der App-Container neu startet)
+# kamal:   neuer App-Container neben dem alten, kamal-proxy schaltet erst um, wenn er gesund ist
+activate() {
+  case "$(tier_of "$1")" in
+    compose) dc "$1" up -d --remove-orphans ;;
+    kamal) kamal_activate "$1" ;;
+    *) log "Stufe '$(tier_of "$1")' wird auf diesem Host nicht unterstützt"; return 1 ;;
+  esac
+}
+
+# App-Container der Stufe kamal: Einmal-Container (compose run) des Dienstes app
+app_containers() {
+  docker ps -a --filter "label=com.docker.compose.project=$NAME" --filter "label=com.docker.compose.service=app" \
+    --filter "label=com.docker.compose.oneoff=True" --format '{{.Names}}'
+}
+
+# Port, auf dem die App im Container lauscht: aus ports bzw. expose des Dienstes app, sonst 3000
+app_port() {
+  dc "$1" config --format json | jq -r '.services.app | ((.ports // [])[0].target // (.expose // [])[0] // 3000) | tostring'
+}
+
+ensure_proxy() {
+  local port="$1" name="$NAME-proxy" bound
+  if docker inspect "$name" >/dev/null 2>&1; then
+    bound=$(docker inspect -f '{{range $p, $b := .HostConfig.PortBindings}}{{range $b}}{{.HostPort}}{{end}}{{end}}' "$name")
+    if [ "$bound" = "$port" ]; then docker start "$name" >/dev/null; return 0; fi
+    log "Proxy-Port geändert ($bound → $port), Proxy neu anlegen"
+    docker rm -f "$name" >/dev/null
+  fi
+  # Wechsel von der Stufe compose: der bisherige App-Dienst belegt den Port
+  docker ps -aq --filter "label=com.docker.compose.project=$NAME" --filter "label=com.docker.compose.service=app" \
+    --filter "label=com.docker.compose.oneoff=False" | xargs -r docker rm -f >/dev/null
+  log "kamal-proxy für $NAME auf 127.0.0.1:$port starten"
+  docker run -d --name "$name" --network "${NAME}_default" --restart unless-stopped \
+    -p "127.0.0.1:$port:80" -v "$name-state:/home/kamal-proxy/.config/kamal-proxy" "$KAMAL_PROXY_IMAGE" >/dev/null
+}
+
+kamal_activate() {
+  local rel="$1" port target others svc container c
+  port=$(port_of "$rel")
+  target=$(app_port "$rel")
+  [[ "$target" =~ ^[0-9]+$ ]] || { log "Port der App im Container unbekannt"; return 1; }
+  others=()
+  while IFS= read -r svc; do [ "$svc" = app ] || others+=("$svc"); done < <(dc "$rel" config --services)
+  [ ${#others[@]} -gt 0 ] && { dc "$rel" up -d "${others[@]}" || return 1; }
+
+  container="$NAME-app-$(basename "$rel")"
+  docker rm -f "$container" >/dev/null 2>&1 || true
+  dc "$rel" run -d --no-deps --name "$container" app >/dev/null || return 1
+  docker update --restart unless-stopped "$container" >/dev/null
+  ensure_proxy "$port" || return 1
+
+  log "kamal-proxy: Verkehr auf $container umschalten, sobald /readyz grün ist"
+  if docker exec "$NAME-proxy" kamal-proxy deploy app --target "$container:$target" \
+       --health-check-path /readyz --deploy-timeout "${HEALTH_TIMEOUT}s"; then
+    for c in $(app_containers); do [ "$c" = "$container" ] || docker rm -f "$c" >/dev/null; done
+    return 0
+  fi
+  log "Neuer Container wird nicht gesund, der bisherige bedient weiter alle Anfragen"
+  docker logs --tail 80 "$container" >&2 || true
+  docker rm -f "$container" >/dev/null 2>&1 || true
+  return 1
+}
+
 # ---------- Aktionen ----------
 
 do_deploy() {
@@ -202,9 +270,9 @@ do_deploy() {
     esac
   fi
 
-  log "Umschalten auf $(basename "$rel")"
+  log "Umschalten auf $(basename "$rel") (Stufe $(tier_of "$rel"))"
   set_link "$APP/current" "$rel"
-  if dc "$rel" up -d --remove-orphans && wait_healthy "$rel"; then
+  if activate "$rel" && wait_healthy "$rel"; then
     [ -n "$old_cur" ] && [ "$old_cur" != "$rel" ] && set_link "$APP/previous" "$old_cur"
     domain=$(json_get "$rel/delivery.json" ".environments[\"$ENVIRONMENT\"].domain")
     if [ -n "$domain" ]; then as_root "$FACTORY_BIN/factory-site" "$NAME" "$domain" "$port" || log "Warnung: Caddy-Site für $domain nicht geschrieben"; fi
@@ -218,7 +286,7 @@ do_deploy() {
     log "Rollback auf $(basename "$old_cur")"
     set_link "$APP/current" "$old_cur"
     [ -n "$old_prev" ] && set_link "$APP/previous" "$old_prev"
-    if dc "$old_cur" up -d --remove-orphans && wait_healthy "$old_cur"; then
+    if activate "$old_cur" && wait_healthy "$old_cur"; then
       die "Deploy fehlgeschlagen, Rollback auf die vorige Version erfolgreich"
     fi
     die "Deploy fehlgeschlagen und auch der Rollback ist nicht gesund. Bitte sofort prüfen."
@@ -234,7 +302,7 @@ do_rollback() {
   refresh_secrets "$(json_get "$target/release.json" .infisicalProjectId)"
   set_link "$APP/current" "$target"
   [ -n "$cur" ] && set_link "$APP/previous" "$cur"
-  dc "$target" up -d --remove-orphans || die "Rollback: Start fehlgeschlagen"
+  activate "$target" || die "Rollback: Start fehlgeschlagen"
   wait_healthy "$target" || die "Rollback ausgeführt, aber die Version ist nicht gesund"
   log "Rollback erfolgreich: $NAME läuft mit $(json_get "$target/release.json" .image)"
 }
@@ -253,11 +321,14 @@ do_restore() {
   done < <(dc "$cur" config --services)
   log "App anhalten (${services[*]}), Zustand zurückspielen: ${SNAPSHOT:-latest}"
   [ ${#services[@]} -gt 0 ] && dc "$cur" stop "${services[@]}"
+  if [ "$(tier_of "$cur")" = kamal ]; then
+    app_containers | xargs -r docker stop >/dev/null
+  fi
   if ! backup_container "$NAME" "$cur" rw restore "${SNAPSHOT:-latest}"; then
-    dc "$cur" up -d || true
+    activate "$cur" || true
     die "Restore fehlgeschlagen. Die App wurde wieder gestartet; der Zustand kann teilweise zurückgespielt sein."
   fi
-  dc "$cur" up -d
+  activate "$cur" || die "Restore ausgeführt, aber die App startet nicht"
   wait_healthy "$cur" || die "Restore ausgeführt, aber die App ist danach nicht gesund"
   log "Restore erfolgreich"
 }
@@ -266,8 +337,13 @@ do_status() {
   local cur
   cur=$(readlink -f "$APP/current" 2>/dev/null || true)
   [ -n "$cur" ] || { echo "{\"app\": \"$NAME\", \"deployed\": false}"; return 0; }
-  jq -c --arg app "$NAME" '{app: $app, deployed: true, image, commit}' "$cur/release.json"
+  jq -c --arg app "$NAME" --arg tier "$(tier_of "$cur")" '{app: $app, deployed: true, tier: $tier, image, commit}' "$cur/release.json"
   dc "$cur" ps --format '{{.Service}}: {{.State}} {{.Health}}'
+  if [ "$(tier_of "$cur")" = kamal ]; then
+    local c
+    for c in $(app_containers); do docker ps -a --filter "name=^${c}\$" --format 'app ({{.Names}}): {{.State}} {{.Status}}'; done
+    docker exec "$NAME-proxy" kamal-proxy list 2>/dev/null || true
+  fi
 }
 
 # Für Timer: alle deployten Apps dieses Hosts

@@ -29,7 +29,8 @@ case "$1" in
     ;;
   wipe)
     docker exec demo-staging-db-1 psql -U app -d app -c 'delete from notes' >/dev/null
-    docker exec demo-staging-app-1 rm -f /data/uploads/backup.txt
+    app=$(docker ps --filter label=com.docker.compose.project=demo-staging --filter label=com.docker.compose.service=app --format "{{.Names}}" | head -1)
+    docker exec "$app" rm -f /data/uploads/backup.txt
     [ "$(curl -fsS "$BASE/notes" | jq length)" = 0 ] || { echo "::error::Daten nicht gelöscht"; exit 1; }
     ;;
   seeded)

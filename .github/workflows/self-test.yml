@@ -65,8 +65,17 @@ jobs:
       working_directory: examples/demo-app
 
   host-e2e:
+    name: host-e2e (${{ matrix.tier }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - tier: compose
+            config: .factory/delivery.json
+          - tier: kamal
+            config: .factory/delivery.kamal.json
     steps:
       - uses: actions/checkout@v4
         with:
@@ -74,6 +83,7 @@ jobs:
       - id: config
         uses: ./.pipelines/actions/config
         with:
+          config: ${{ matrix.config }}
           working-directory: .pipelines/examples/demo-app
       - id: host
         name: Runner als Deploy-Host einrichten
@@ -93,6 +103,9 @@ jobs:
       - run: bash .pipelines/tests/e2e/check.sh healthy "${{ steps.host.outputs.good }}"
       - run: bash .pipelines/tests/e2e/check.sh seed-data
       - run: bash .pipelines/tests/e2e/check.sh fill
+      - name: Stufe kamal - Dauerabfrage von /readyz starten
+        if: matrix.tier == 'kamal'
+        run: bash .pipelines/tests/e2e/probe.sh start
 
       - name: 2. Deploy (kaputtes Image) – muss fehlschlagen und zurückrollen
         id: broken
@@ -133,6 +146,9 @@ jobs:
           test-secrets: ${{ steps.host.outputs.secrets }}
           notify: "false"
       - run: bash .pipelines/tests/e2e/check.sh healthy "${{ steps.host.outputs.good }}"
+      - name: Stufe kamal - keine einzige fehlgeschlagene Anfrage während Deploys und Rollback
+        if: matrix.tier == 'kamal'
+        run: bash .pipelines/tests/e2e/probe.sh stop 0
 
       - name: 4. Backup nach S3 (SeaweedFS)
         run: sudo -u deploy /opt/factory/bin/factory-host backup-all

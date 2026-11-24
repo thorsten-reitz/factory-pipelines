@@ -19,6 +19,7 @@ load_host_env() {
   : "${CREDS_DIR:=/etc/factory-host/credentials}"
   : "${TEST_SECRETS_DIR:=/etc/factory-host/test-secrets}"
   : "${BACKUP_IMAGE:=ghcr.io/thorsten-reitz/factory-pipelines/backup:v0}"
+  : "${KAMAL_PROXY_IMAGE:=basecamp/kamal-proxy:v0.10.2}"
   : "${KEEP_RELEASES:=5}"
   : "${HEALTH_TIMEOUT:=120}"
   : "${USE_SUDO:=1}"
