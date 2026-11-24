@@ -1,0 +1,87 @@
+{{- if .Values.backup.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: backup
+  labels: {{- include "factory.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: backup
+              image: {{ .Values.backup.image }}
+              args: ["backup", "scheduled"]
+              env: {{- include "factory.backupEnv" . | nindent 16 }}
+              volumeMounts: {{- include "factory.backupVolumeMounts" (dict "root" . "readOnly" true) | nindent 16 }}
+          volumes: {{- include "factory.backupVolumes" . | nindent 12 }}
+{{- if .Values.backup.restoreTest.enabled }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: restore-test
+  labels: {{- include "factory.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.backup.restoreTest.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: restore-test
+              image: {{ .Values.backup.image }}
+              args: ["verify"]
+              env: {{- include "factory.backupEnv" . | nindent 16 }}
+              volumeMounts: {{- include "factory.backupVolumeMounts" (dict "root" . "readOnly" true) | nindent 16 }}
+          volumes: {{- include "factory.backupVolumes" . | nindent 12 }}
+{{- end }}
+{{- end }}
+{{- if .Values.heartbeat.enabled }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: heartbeat
+  labels: {{- include "factory.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.heartbeat.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: heartbeat
+              image: {{ .Values.backup.image }}
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  [ -n "${HC_PING_URL:-}" ] || { echo "HC_PING_URL nicht gesetzt"; exit 0; }
+                  if curl -fsS -m 5 http://app/readyz >/dev/null; then url="$HC_PING_URL"; rc=0; else url="${HC_PING_URL%/}/fail"; rc=1; fi
+                  curl -fsS -m 10 --retry 3 "$url" >/dev/null || true
+                  exit $rc
+              env:
+                - name: HC_PING_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.secrets.name }}
+                      key: HC_PING_URL
+                      optional: true
+{{- end }}

@@ -24,7 +24,8 @@ on:
         default: latest
 
 permissions:
-  contents: read
+  # write: die Stufe k3s schreibt den Stand je Umgebung in den Branch factory-deploy
+  contents: write
   packages: write
   id-token: write
   issues: write

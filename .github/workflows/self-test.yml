@@ -36,7 +36,22 @@ jobs:
         run: |
           pipx run --spec "check-jsonschema==0.33.0" check-jsonschema --check-metaschema schema/delivery.schema.json
           pipx run --spec "check-jsonschema==0.33.0" check-jsonschema --schemafile schema/delivery.schema.json \
-            examples/demo-app/.factory/delivery.json templates/delivery.example.json
+            examples/demo-app/.factory/delivery.json examples/demo-app/.factory/delivery.kamal.json \
+            examples/demo-app/.factory/delivery.k3s.json templates/delivery.example.json
+      - name: Helm-Chart
+        run: |
+          helm lint charts/factory-app
+          D=sha256:0000000000000000000000000000000000000000000000000000000000000000
+          helm template demo charts/factory-app -n demo-production -f examples/demo-app/deploy/k3s/values.yaml \
+            --set project=demo --set environment=production --set commit=abc1234 \
+            --set image.repository=ghcr.io/o/demo --set image.digest=$D --set image.pullSecret=registry-pull \
+            --set secrets.infisical.projectId=p-1 --set secrets.infisical.pullTokenKey=GHCR_PULL_TOKEN \
+            --set postgres.enabled=true --set ingress.host=app.example.org \
+            --set backup.enabled=true --set backup.preDeploy=true --set backup.restoreTest.enabled=true \
+            --set seed.enabled=true --set restore.id=run-1 > /tmp/rendered.yaml
+          grep -c '^kind:' /tmp/rendered.yaml
+          curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.7.0/kubeconform-linux-amd64.tar.gz | tar -xz kubeconform
+          ./kubeconform -strict -summary -ignore-missing-schemas /tmp/rendered.yaml
       - name: Compose-Dateien
         env:
           IMAGE: example/app@sha256:0000000000000000000000000000000000000000000000000000000000000000
@@ -55,7 +70,7 @@ jobs:
   delivery:
     uses: ./.github/workflows/delivery.yml
     permissions:
-      contents: read
+      contents: write
       packages: write
       id-token: write
       issues: write
@@ -174,3 +189,158 @@ jobs:
           docker ps -a
           for c in $(docker ps -a --format '{{.Names}}' | grep demo-staging); do echo "::group::$c"; docker logs --tail 100 "$c"; echo "::endgroup::"; done
           sudo ls -la /srv/demo-staging /srv/demo-staging/releases || true
+
+  k3s-e2e:
+    name: k3s-e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    env:
+      DEPLOY_BRANCH: e2e-k3s-${{ github.run_id }}-${{ github.run_attempt }}
+      # Argo CD lädt das Chart von GitHub: bei PRs den Kopf des Branches, nicht den Merge-Commit
+      CHART_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: .pipelines
+      - id: config
+        uses: ./.pipelines/actions/config
+        with:
+          config: .factory/delivery.k3s.json
+          working-directory: .pipelines/examples/demo-app
+      - id: k3s
+        name: k3d-Cluster mit Argo CD einrichten
+        run: bash .pipelines/tests/e2e/k3s-setup.sh "$DEPLOY_BRANCH"
+
+      - name: 1. Deploy (gutes Image)
+        uses: ./.pipelines/actions/deploy-env
+        with:
+          verb: deploy
+          environment: staging
+          working-directory: .pipelines/examples/demo-app
+          config: ${{ steps.config.outputs.config }}
+          image: ${{ steps.k3s.outputs.good }}
+          commit: ${{ github.sha }}
+          secrets-provider: test
+          test-secrets: ${{ steps.k3s.outputs.secrets }}
+          k3s-secrets: existing
+          k3s-values: ${{ steps.k3s.outputs.values }}
+          deploy-branch: ${{ env.DEPLOY_BRANCH }}
+          pipelines-repo: ${{ github.repository }}
+          pipelines-sha: ${{ env.CHART_SHA }}
+          github-token: ${{ github.token }}
+          health-timeout: "480"
+          notify: "false"
+      - run: bash .pipelines/tests/e2e/k3s-check.sh healthy "${{ steps.k3s.outputs.good }}" "${{ github.sha }}"
+      - run: bash .pipelines/tests/e2e/k3s-check.sh seed-data
+      - run: bash .pipelines/tests/e2e/k3s-check.sh fill
+      - name: Dauerabfrage von /readyz starten
+        run: PROBE_URL=http://localhost:8081 bash .pipelines/tests/e2e/probe.sh start
+
+      - name: 2. Deploy (kaputtes Image) – muss fehlschlagen und zurückrollen
+        id: broken
+        continue-on-error: true
+        uses: ./.pipelines/actions/deploy-env
+        with:
+          verb: deploy
+          environment: staging
+          working-directory: .pipelines/examples/demo-app
+          config: ${{ steps.config.outputs.config }}
+          image: ${{ steps.k3s.outputs.broken }}
+          commit: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+          secrets-provider: test
+          test-secrets: ${{ steps.k3s.outputs.secrets }}
+          k3s-secrets: existing
+          k3s-values: ${{ steps.k3s.outputs.values }}
+          deploy-branch: ${{ env.DEPLOY_BRANCH }}
+          pipelines-repo: ${{ github.repository }}
+          pipelines-sha: ${{ env.CHART_SHA }}
+          github-token: ${{ github.token }}
+          health-timeout: "150"
+          notify: "false"
+      - name: Rollback hat gegriffen
+        run: |
+          [ "${{ steps.broken.outcome }}" = failure ] || { echo "::error::Deploy des kaputten Images hätte fehlschlagen müssen"; exit 1; }
+          bash .pipelines/tests/e2e/k3s-check.sh healthy "${{ steps.k3s.outputs.good }}" "${{ github.sha }}"
+
+      - name: 3. Zweites gutes Image, dann manueller Rollback
+        uses: ./.pipelines/actions/deploy-env
+        with:
+          verb: deploy
+          environment: staging
+          working-directory: .pipelines/examples/demo-app
+          config: ${{ steps.config.outputs.config }}
+          image: ${{ steps.k3s.outputs.good2 }}
+          commit: cccccccccccccccccccccccccccccccccccccccc
+          secrets-provider: test
+          test-secrets: ${{ steps.k3s.outputs.secrets }}
+          k3s-secrets: existing
+          k3s-values: ${{ steps.k3s.outputs.values }}
+          deploy-branch: ${{ env.DEPLOY_BRANCH }}
+          pipelines-repo: ${{ github.repository }}
+          pipelines-sha: ${{ env.CHART_SHA }}
+          github-token: ${{ github.token }}
+          health-timeout: "480"
+          notify: "false"
+      - run: bash .pipelines/tests/e2e/k3s-check.sh healthy "${{ steps.k3s.outputs.good2 }}" cccccccccccccccccccccccccccccccccccccccc
+      - uses: ./.pipelines/actions/deploy-env
+        with:
+          verb: rollback
+          environment: staging
+          working-directory: .pipelines/examples/demo-app
+          config: ${{ steps.config.outputs.config }}
+          image: ${{ steps.k3s.outputs.good }}
+          commit: ${{ github.sha }}
+          secrets-provider: test
+          test-secrets: ${{ steps.k3s.outputs.secrets }}
+          k3s-secrets: existing
+          k3s-values: ${{ steps.k3s.outputs.values }}
+          deploy-branch: ${{ env.DEPLOY_BRANCH }}
+          pipelines-repo: ${{ github.repository }}
+          pipelines-sha: ${{ env.CHART_SHA }}
+          github-token: ${{ github.token }}
+          health-timeout: "480"
+          notify: "false"
+      - run: bash .pipelines/tests/e2e/k3s-check.sh healthy "${{ steps.k3s.outputs.good }}" "${{ github.sha }}"
+      - name: Keine einzige fehlgeschlagene Anfrage während Deploys und Rollback
+        run: bash .pipelines/tests/e2e/probe.sh stop 0
+
+      - name: 4. Backup (CronJob sofort ausführen)
+        run: bash .pipelines/tests/e2e/k3s-check.sh job backup
+      - run: bash .pipelines/tests/e2e/k3s-check.sh wipe
+      - name: 5. Restore per Workflow-Aktion (Restore-Job über den Deploy-Branch)
+        uses: ./.pipelines/actions/deploy-env
+        with:
+          verb: restore
+          environment: staging
+          working-directory: .pipelines/examples/demo-app
+          config: ${{ steps.config.outputs.config }}
+          image: ${{ steps.k3s.outputs.good }}
+          commit: ${{ github.sha }}
+          secrets-provider: test
+          test-secrets: ${{ steps.k3s.outputs.secrets }}
+          k3s-secrets: existing
+          k3s-values: ${{ steps.k3s.outputs.values }}
+          deploy-branch: ${{ env.DEPLOY_BRANCH }}
+          pipelines-repo: ${{ github.repository }}
+          pipelines-sha: ${{ env.CHART_SHA }}
+          github-token: ${{ github.token }}
+          health-timeout: "480"
+          notify: "false"
+          snapshot: latest
+      - run: bash .pipelines/tests/e2e/k3s-check.sh seeded
+      - name: 6. Restore-Test (CronJob sofort ausführen)
+        run: bash .pipelines/tests/e2e/k3s-check.sh job restore-test
+
+      - name: Diagnose
+        if: failure()
+        run: |
+          kubectl get applications -n argocd -o wide || true
+          kubectl get applications -n argocd -o yaml | grep -A25 'status:' | head -120 || true
+          kubectl -n demo-staging get all,pvc,jobs,cronjobs || true
+          kubectl -n demo-staging describe deployment app | tail -30 || true
+          for p in $(kubectl -n demo-staging get pods -o name); do echo "::group::$p"; kubectl -n demo-staging logs "$p" --all-containers --tail 60 || true; echo "::endgroup::"; done
+      - name: Deploy-Branch löschen
+        if: always()
+        run: git -C .pipelines push -q origin --delete "$DEPLOY_BRANCH" || true

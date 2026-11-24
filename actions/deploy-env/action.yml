@@ -39,6 +39,27 @@ inputs:
   notify:
     description: "'false' schaltet Kommentare und Issues ab"
     default: "true"
+  deploy-branch:
+    description: "Stufe k3s: Branch mit dem Stand je Umgebung, den Argo CD synchronisiert"
+    default: factory-deploy
+  pipelines-repo:
+    description: "Stufe k3s: Repo von factory-pipelines (Quelle des Helm-Charts)"
+    default: thorsten-reitz/factory-pipelines
+  pipelines-sha:
+    description: "Stufe k3s: Commit von factory-pipelines, aus dem Argo CD das Chart lädt"
+    default: ""
+  k3s-secrets:
+    description: "Stufe k3s: infisical (Standard) oder existing (Secret app-secrets liegt schon im Namespace, nur Tests)"
+    default: infisical
+  health-timeout:
+    description: "Stufe k3s: Sekunden, bis /health den neuen Commit melden muss"
+    default: "600"
+  k3s-values:
+    description: "Stufe k3s: zusätzliche Chart-Werte als JSON, werden zuletzt übernommen"
+    default: "{}"
+  commit:
+    description: Commit, den /health nach dem Deploy melden muss (Standard github.sha)
+    default: ""
 runs:
   using: composite
   steps:
@@ -64,8 +85,22 @@ runs:
         INFISICAL_PROJECT_ID: ${{ inputs.infisical-project-id }}
         REGISTRY_TOKEN: ${{ inputs.registry-token }}
         REGISTRY_USER: ${{ github.actor }}
-        COMMIT: ${{ github.sha }}
-      run: '"$GITHUB_ACTION_PATH/deploy.sh"'
+        COMMIT: ${{ inputs.commit || github.sha }}
+        # nur Stufe k3s
+        K3S_VALUES: ${{ inputs.k3s-values }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        DEPLOY_BRANCH: ${{ inputs.deploy-branch }}
+        PIPELINES_REPO: ${{ inputs.pipelines-repo }}
+        PIPELINES_SHA: ${{ inputs.pipelines-sha }}
+        K3S_SECRETS: ${{ inputs.k3s-secrets }}
+        HEALTH_TIMEOUT: ${{ inputs.health-timeout }}
+        RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+      run: |
+        if [ "$(jq -r '.tier' <<<"$CONFIG")" = k3s ]; then
+          "$GITHUB_ACTION_PATH/k3s.sh"
+        else
+          "$GITHUB_ACTION_PATH/deploy.sh"
+        fi
     - name: Health-Check von außen
       id: health
       if: inputs.verb != 'restore'

@@ -372,14 +372,14 @@ for_each_app() {
 app_backup() {
   backup_enabled "$1" || return 0
   log "Backup $NAME"
-  if backup_container "$NAME" "$1" ro backup scheduled; then ping_check "$NAME" HC_PING_URL_BACKUP; else ping_check "$NAME" HC_PING_URL_BACKUP /fail; return 1; fi
+  backup_container "$NAME" "$1" ro backup scheduled  # meldet selbst an HC_PING_URL_BACKUP
 }
 
 app_restore_test() {
   backup_enabled "$1" || return 0
   [ "$(jq -r '.backup.restoreTest' "$1/delivery.json")" = weekly ] || return 0
   log "Restore-Test $NAME"
-  if backup_container "$NAME" "$1" ro verify; then ping_check "$NAME" HC_PING_URL_RESTORE_TEST; else ping_check "$NAME" HC_PING_URL_RESTORE_TEST /fail; return 1; fi
+  backup_container "$NAME" "$1" ro verify  # meldet selbst an HC_PING_URL_RESTORE_TEST
 }
 
 app_heartbeat() {

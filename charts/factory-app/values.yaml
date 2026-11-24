@@ -1,0 +1,83 @@
+# Die meisten Werte setzt die Pipeline aus .factory/delivery.json (actions/deploy-env/k3s.sh).
+# Projektspezifisches gehört nach deploy/k3s/values.yaml im Projekt.
+project: ""
+environment: ""
+commit: ""
+# Normalisierte delivery.json als JSON-Text, für Backup und Restore-Test
+delivery: "{}"
+
+image:
+  repository: ""
+  digest: ""
+  # Name des Secrets mit den Zugangsdaten zur Registry (leer: öffentliches Image)
+  pullSecret: ""
+
+app:
+  port: 3000
+  command: []
+  replicas: 1
+  env: {}
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 768Mi }
+
+ingress:
+  # leer: Regel ohne Host (Tests); sonst Domain der Umgebung mit TLS über cert-manager
+  host: ""
+  className: traefik
+  clusterIssuer: letsencrypt
+
+secrets:
+  # infisical: InfisicalStaticSecret synchronisiert die Secrets der Umgebung nach "app-secrets"
+  # existing:  das Secret "app-secrets" existiert bereits (Selbsttest)
+  provider: infisical
+  name: app-secrets
+  infisical:
+    projectId: ""
+    environmentSlug: ""
+    secretPath: /
+    refreshInterval: 60s
+    authRef: { name: infisical, namespace: infisical }
+    # Erzeugt zusätzlich ein Pull-Secret für die Registry aus diesem Secret (z. B. GHCR_PULL_TOKEN)
+    pullTokenKey: ""
+    pullRegistry: ghcr.io
+    pullUser: ""
+
+postgres:
+  enabled: false
+  service: db
+  image: postgres:17-alpine
+  user: app
+  database: app
+  storage: 5Gi
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 512Mi }
+
+# Volumes mit Zustand aus state[] (type volume): [{name: uploads, mountPath: /data/uploads, size: 5Gi}]
+volumes: []
+
+migrate:
+  command: []
+
+seed:
+  enabled: false
+  command: []
+
+backup:
+  enabled: false
+  image: ghcr.io/thorsten-reitz/factory-pipelines/backup:v0
+  schedule: "0 3 * * *"
+  preDeploy: false
+  restoreTest:
+    enabled: false
+    schedule: "0 5 * * 0"
+
+heartbeat:
+  enabled: true
+  schedule: "*/5 * * * *"
+
+# Restore auf Abruf: die Pipeline setzt id (eindeutig) und snapshot; das Chart legt dann den Job restore-<id> an
+restore:
+  id: ""
+  snapshot: latest

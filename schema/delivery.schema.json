@@ -5,37 +5,73 @@
   "description": "Betriebsschalter eines Factory-Projekts. Fehlende Werte kommen aus schema/defaults.json.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["tier"],
+  "required": [
+    "tier"
+  ],
   "properties": {
-    "$schema": { "type": "string" },
+    "$schema": {
+      "type": "string"
+    },
     "project": {
       "description": "Projektname für Hosts, Volumes und Backups. Standard: Repo-Name in Kleinbuchstaben.",
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9-]{0,39}$"
     },
     "tier": {
-      "description": "Orchestrierungs-Stufe. compose: docker compose up (kurze Unterbrechung beim Deploy). kamal: ohne Unterbrechung, neuer App-Container neben dem alten, Umschalten per kamal-proxy (ohne Kamal-CLI). k3s: noch nicht deploybar.",
-      "enum": ["compose", "kamal", "k3s"]
+      "description": "Orchestrierungs-Stufe. compose: docker compose up (kurze Unterbrechung beim Deploy). kamal: ohne Unterbrechung, neuer App-Container neben dem alten, Umschalten per kamal-proxy (ohne Kamal-CLI). k3s: Helm-Chart von factory-pipelines, ausgerollt von Argo CD über den Branch factory-deploy.",
+      "enum": [
+        "compose",
+        "kamal",
+        "k3s"
+      ]
     },
-    "provisioning": { "enum": ["cloud-init", "opentofu"] },
+    "provisioning": {
+      "enum": [
+        "cloud-init",
+        "opentofu"
+      ]
+    },
     "image": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "dockerfile": { "type": "string", "minLength": 1 },
-        "context": { "type": "string", "minLength": 1 },
-        "registry": { "type": "string", "pattern": "^[a-z0-9.-]+(:[0-9]+)?$" },
-        "platforms": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
-        "scan": { "type": "boolean" }
+        "dockerfile": {
+          "type": "string",
+          "minLength": 1
+        },
+        "context": {
+          "type": "string",
+          "minLength": 1
+        },
+        "registry": {
+          "type": "string",
+          "pattern": "^[a-z0-9.-]+(:[0-9]+)?$"
+        },
+        "platforms": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "scan": {
+          "type": "boolean"
+        }
       }
     },
     "environments": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "test": { "$ref": "#/$defs/testEnvironment" },
-        "staging": { "$ref": "#/$defs/deployEnvironment" },
-        "production": { "$ref": "#/$defs/deployEnvironment" }
+        "test": {
+          "$ref": "#/$defs/testEnvironment"
+        },
+        "staging": {
+          "$ref": "#/$defs/deployEnvironment"
+        },
+        "production": {
+          "$ref": "#/$defs/deployEnvironment"
+        }
       }
     },
     "state": {
@@ -46,25 +82,43 @@
           {
             "type": "object",
             "additionalProperties": false,
-            "required": ["type", "service"],
+            "required": [
+              "type",
+              "service"
+            ],
             "properties": {
-              "type": { "const": "postgres" },
-              "service": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$" },
+              "type": {
+                "const": "postgres"
+              },
+              "service": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9_-]*$"
+              },
               "urlEnv": {
                 "description": "Name des Secrets mit der Verbindungs-URL. Standard: DATABASE_URL.",
                 "type": "string",
                 "pattern": "^[A-Z_][A-Z0-9_]*$"
               },
-              "pitr": { "type": "boolean" }
+              "pitr": {
+                "type": "boolean"
+              }
             }
           },
           {
             "type": "object",
             "additionalProperties": false,
-            "required": ["type", "name"],
+            "required": [
+              "type",
+              "name"
+            ],
             "properties": {
-              "type": { "const": "volume" },
-              "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$" }
+              "type": {
+                "const": "volume"
+              },
+              "name": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9_-]*$"
+              }
             }
           }
         ]
@@ -74,57 +128,105 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "enabled": { "type": "boolean" },
-        "schedule": { "enum": ["daily"] },
+        "enabled": {
+          "type": "boolean"
+        },
+        "schedule": {
+          "enum": [
+            "daily"
+          ]
+        },
         "retention": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "daily": { "type": "integer", "minimum": 1 },
-            "weekly": { "type": "integer", "minimum": 0 },
-            "monthly": { "type": "integer", "minimum": 0 }
+            "daily": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "weekly": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "monthly": {
+              "type": "integer",
+              "minimum": 0
+            }
           }
         },
-        "restoreTest": { "enum": ["weekly", "off"] }
+        "restoreTest": {
+          "enum": [
+            "weekly",
+            "off"
+          ]
+        }
       }
     },
     "health": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "components": { "type": "array", "items": { "type": "string" } }
+        "components": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
       }
     },
     "observability": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "enabled": { "type": "boolean" },
-        "metrics": { "type": "boolean" }
+        "enabled": {
+          "type": "boolean"
+        },
+        "metrics": {
+          "type": "boolean"
+        }
       }
     },
     "watchdog": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "provider": { "enum": ["healthchecks", "none"] },
+        "provider": {
+          "enum": [
+            "healthchecks",
+            "none"
+          ]
+        },
         "githubProbe": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "enabled": { "type": "boolean" },
-            "intervalMinutes": { "type": "integer", "minimum": 5 }
+            "enabled": {
+              "type": "boolean"
+            },
+            "intervalMinutes": {
+              "type": "integer",
+              "minimum": 5
+            }
           }
         },
-        "externalHttp": { "enum": ["none", "uptimerobot"] }
+        "externalHttp": {
+          "enum": [
+            "none",
+            "uptimerobot"
+          ]
+        }
       }
     },
     "flags": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "enabled": { "type": "boolean" },
-        "file": { "type": "string" }
+        "enabled": {
+          "type": "boolean"
+        },
+        "file": {
+          "type": "string"
+        }
       }
     }
   },
@@ -133,28 +235,135 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "e2e": { "type": "boolean" },
-        "services": { "description": "Compose-Datei für die Test-Umgebung in CI.", "type": "string" },
-        "url": { "description": "Adresse der App in der Test-Umgebung.", "type": "string", "format": "uri" }
+        "e2e": {
+          "type": "boolean"
+        },
+        "services": {
+          "description": "Compose-Datei für die Test-Umgebung in CI.",
+          "type": "string"
+        },
+        "url": {
+          "description": "Adresse der App in der Test-Umgebung.",
+          "type": "string",
+          "format": "uri"
+        }
       }
     },
     "deployEnvironment": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["port"],
       "properties": {
         "port": {
-          "description": "Port auf 127.0.0.1 des Hosts, an den Caddy weiterleitet. Pro Host eindeutig (Konvention: 5100-5999).",
+          "description": "Port auf 127.0.0.1 des Hosts, an den Caddy weiterleitet (Stufen compose und kamal, dort Pflicht). Pro Host eindeutig (Konvention: 5100-5999).",
           "type": "integer",
           "minimum": 1024,
           "maximum": 65535
         },
-        "domain": { "type": "string", "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$" },
-        "url": { "description": "Öffentliche Adresse für den Health-Check von außen. Standard: https://<domain>.", "type": "string", "format": "uri" },
-        "autoDeploy": { "type": "boolean" },
-        "approval": { "type": "boolean" },
-        "data": { "enum": ["seed", "anonymized-copy"] }
+        "domain": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$"
+        },
+        "url": {
+          "description": "Öffentliche Adresse für den Health-Check von außen. Standard: https://<domain>.",
+          "type": "string",
+          "format": "uri"
+        },
+        "autoDeploy": {
+          "type": "boolean"
+        },
+        "approval": {
+          "type": "boolean"
+        },
+        "data": {
+          "enum": [
+            "seed",
+            "anonymized-copy"
+          ]
+        }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "tier": {
+            "enum": [
+              "compose",
+              "kamal"
+            ]
+          }
+        },
+        "required": [
+          "tier"
+        ]
+      },
+      "then": {
+        "properties": {
+          "environments": {
+            "properties": {
+              "staging": {
+                "required": [
+                  "port"
+                ]
+              },
+              "production": {
+                "required": [
+                  "port"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "tier": {
+            "const": "k3s"
+          }
+        },
+        "required": [
+          "tier"
+        ]
+      },
+      "then": {
+        "properties": {
+          "environments": {
+            "properties": {
+              "staging": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "domain"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "url"
+                    ]
+                  }
+                ]
+              },
+              "production": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "domain"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "url"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
 }

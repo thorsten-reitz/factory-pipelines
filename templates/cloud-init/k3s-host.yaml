@@ -1,0 +1,152 @@
+#cloud-config
+# k3s-Server für die Stufe k3s (Ubuntu 24.04 oder neuer, ein Knoten). Beim Anlegen als User-Data angeben;
+# danach ist kein SSH-Login nötig: Argo CD holt jeden neuen Stand aus dem Branch factory-deploy des Projekts.
+# Platzhalter <...> vorher ersetzen:
+#
+#   <PROJECT>                  Projektname aus .factory/delivery.json (bzw. Repo-Name in Kleinbuchstaben)
+#   <ENVIRONMENT>              staging oder production (eine Umgebung pro Cluster; für beide: zweite Application unten)
+#   <REPO>                     GitHub-Repo des Projekts, z. B. owner/shop
+#   <REPO_DEPLOY_KEY>          privater Deploy-Key (nur lesen) für das Repo; bei öffentlichen Repos den Block entfernen
+#   <ACME_EMAIL>               E-Mail für Let's-Encrypt-Zertifikate
+#   <INFISICAL_CLIENT_ID>      Maschinen-Identität des Clusters (Universal Auth), Lesezugriff auf die Umgebung
+#   <INFISICAL_CLIENT_SECRET>  dazugehöriges Client-Secret
+#
+# Die k3s-Datenbank verschlüsselt Secrets (--secrets-encryption). Client-Secret und Deploy-Key stehen aber in
+# der User-Data, die beim Anbieter abrufbar bleibt: danach in Infisical ein neues Client-Secret erzeugen und das
+# alte widerrufen, ebenso den Deploy-Key tauschen (siehe README von factory-pipelines, "Stufe k3s").
+# Zustand (Postgres, Volumes) liegt auf dem Knoten (local-path); deshalb ein Knoten pro Cluster.
+
+package_update: true
+package_upgrade: true
+packages: [curl, jq, ufw, fail2ban, unattended-upgrades]
+
+write_files:
+  - path: /etc/ssh/sshd_config.d/10-factory.conf
+    content: |
+      PasswordAuthentication no
+      PermitRootLogin prohibit-password
+
+  # Alles unter /var/lib/rancher/k3s/server/manifests/ wendet k3s beim Start selbst an
+  - path: /var/lib/rancher/k3s/server/manifests/10-cert-manager.yaml
+    content: |
+      apiVersion: helm.cattle.io/v1
+      kind: HelmChart
+      metadata: { name: cert-manager, namespace: kube-system }
+      spec:
+        repo: https://charts.jetstack.io
+        chart: cert-manager
+        version: v1.20.5
+        targetNamespace: cert-manager
+        createNamespace: true
+        valuesContent: |
+          crds:
+            enabled: true
+  - path: /var/lib/rancher/k3s/server/manifests/11-argocd.yaml
+    content: |
+      apiVersion: helm.cattle.io/v1
+      kind: HelmChart
+      metadata: { name: argo-cd, namespace: kube-system }
+      spec:
+        repo: https://argoproj.github.io/argo-helm
+        chart: argo-cd
+        version: 10.17.0
+        targetNamespace: argocd
+        createNamespace: true
+        valuesContent: |
+          dex: { enabled: false }
+          notifications: { enabled: false }
+          configs:
+            cm:
+              # Neue Stände im Deploy-Branch nach spätestens einer Minute übernehmen
+              timeout.reconciliation: 60s
+  - path: /var/lib/rancher/k3s/server/manifests/12-infisical-operator.yaml
+    content: |
+      apiVersion: helm.cattle.io/v1
+      kind: HelmChart
+      metadata: { name: infisical-secrets-operator, namespace: kube-system }
+      spec:
+        repo: https://dl.cloudsmith.io/public/infisical/helm-charts/helm/charts/
+        chart: secrets-operator
+        version: 0.11.16
+        targetNamespace: infisical
+        createNamespace: true
+  - path: /var/lib/rancher/k3s/server/manifests/20-bootstrap.yaml
+    permissions: "0600"
+    content: |
+      apiVersion: v1
+      kind: Namespace
+      metadata: { name: infisical }
+      ---
+      apiVersion: v1
+      kind: Secret
+      metadata: { name: infisical-credentials, namespace: infisical }
+      stringData:
+        clientId: <INFISICAL_CLIENT_ID>
+        clientSecret: <INFISICAL_CLIENT_SECRET>
+      ---
+      apiVersion: v1
+      kind: Namespace
+      metadata: { name: argocd }
+      ---
+      # Lesezugriff von Argo CD auf das Projekt-Repo (nur für private Repos nötig)
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: repo-project
+        namespace: argocd
+        labels: { argocd.argoproj.io/secret-type: repository }
+      stringData:
+        type: git
+        url: git@github.com:<REPO>.git
+        sshPrivateKey: |
+          <REPO_DEPLOY_KEY>
+  - path: /var/lib/rancher/k3s/server/manifests/30-apps.yaml
+    content: |
+      apiVersion: cert-manager.io/v1
+      kind: ClusterIssuer
+      metadata: { name: letsencrypt }
+      spec:
+        acme:
+          server: https://acme-v02.api.letsencrypt.org/directory
+          email: <ACME_EMAIL>
+          privateKeySecretRef: { name: letsencrypt-account }
+          solvers:
+            - http01:
+                ingress: { ingressClassName: traefik }
+      ---
+      apiVersion: secrets.infisical.com/v1beta1
+      kind: InfisicalConnection
+      metadata: { name: infisical, namespace: infisical }
+      spec:
+        address: https://eu.infisical.com
+      ---
+      apiVersion: secrets.infisical.com/v1beta1
+      kind: InfisicalAuth
+      metadata: { name: infisical, namespace: infisical }
+      spec:
+        infisicalConnectionRef: { name: infisical, namespace: infisical }
+        method: universal
+        universal:
+          clientIdRef: { name: infisical-credentials, namespace: infisical, key: clientId }
+          clientSecretRef: { name: infisical-credentials, namespace: infisical, key: clientSecret }
+      ---
+      # Einstieg: synchronisiert argocd/<ENVIRONMENT>/ aus dem Deploy-Branch. Die Application der App selbst
+      # (Chart-Version, Image-Digest, Werte) schreibt die Pipeline dorthin.
+      apiVersion: argoproj.io/v1alpha1
+      kind: Application
+      metadata: { name: <PROJECT>-<ENVIRONMENT>-root, namespace: argocd }
+      spec:
+        project: default
+        source:
+          repoURL: git@github.com:<REPO>.git
+          targetRevision: factory-deploy
+          path: argocd/<ENVIRONMENT>
+        destination: { server: https://kubernetes.default.svc, namespace: argocd }
+        syncPolicy:
+          automated: { prune: true, selfHeal: true }
+          retry: { limit: 10, backoff: { duration: 30s, factor: 2, maxDuration: 10m } }
+
+runcmd:
+  - [sh, -c, "ufw allow 22/tcp && ufw allow 80/tcp && ufw allow 443/tcp && ufw --force enable"]
+  - [sh, -c, "systemctl enable --now fail2ban unattended-upgrades && systemctl reload ssh"]
+  - [sh, -c, "curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=v1.36.6+k3s1 sh -s - server --secrets-encryption --write-kubeconfig-mode 0600"]

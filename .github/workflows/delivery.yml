@@ -147,7 +147,7 @@ jobs:
       group: factory-deploy-staging
       cancel-in-progress: false
     permissions:
-      contents: read
+      contents: write
       id-token: write
       packages: read
       issues: write
@@ -175,6 +175,8 @@ jobs:
           infisical-identity-id: ${{ vars.INFISICAL_IDENTITY_ID }}
           registry-token: ${{ github.token }}
           github-token: ${{ github.token }}
+          pipelines-repo: ${{ needs.setup.outputs.pipelines_repo }}
+          pipelines-sha: ${{ needs.setup.outputs.pipelines_sha }}
 
   deploy-production:
     name: Deploy production
@@ -190,7 +192,7 @@ jobs:
       group: factory-deploy-production
       cancel-in-progress: false
     permissions:
-      contents: read
+      contents: write
       id-token: write
       packages: read
       issues: write
@@ -218,6 +220,8 @@ jobs:
           infisical-identity-id: ${{ vars.INFISICAL_IDENTITY_ID }}
           registry-token: ${{ github.token }}
           github-token: ${{ github.token }}
+          pipelines-repo: ${{ needs.setup.outputs.pipelines_repo }}
+          pipelines-sha: ${{ needs.setup.outputs.pipelines_sha }}
 
   operate:
     name: ${{ inputs.action }} ${{ inputs.environment }}
@@ -229,7 +233,7 @@ jobs:
       group: factory-deploy-${{ inputs.environment }}
       cancel-in-progress: false
     permissions:
-      contents: read
+      contents: write
       id-token: write
       issues: write
       pull-requests: write
@@ -260,3 +264,5 @@ jobs:
           infisical-project-id: ${{ vars.INFISICAL_PROJECT_ID }}
           infisical-identity-id: ${{ vars.INFISICAL_IDENTITY_ID }}
           github-token: ${{ github.token }}
+          pipelines-repo: ${{ needs.setup.outputs.pipelines_repo }}
+          pipelines-sha: ${{ needs.setup.outputs.pipelines_sha }}

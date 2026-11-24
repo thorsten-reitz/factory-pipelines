@@ -140,10 +140,21 @@ do_verify() {
   log "Restore-Test bestanden"
 }
 
+# Ergebnis an den Watchdog melden (healthchecks.io): Erfolg an die URL, Fehlschlag an <URL>/fail.
+# Die URLs kommen aus den Secrets der App; ohne URL wird nichts gemeldet.
+ping() {
+  [ -n "$1" ] || return 0
+  curl -fsS -m 10 --retry 3 "${1%/}$2" >/dev/null 2>&1 || log "Meldung an den Watchdog fehlgeschlagen"
+}
+reported() {
+  url="$1"; shift
+  if ( "$@" ); then ping "$url" ""; else ping "$url" /fail; exit 1; fi
+}
+
 case "${1:-}" in
-  backup) shift; do_backup "${1:-manual}" ;;
-  restore) shift; do_restore "${1:-latest}" ;;
-  verify) do_verify ;;
+  backup) shift; reported "${HC_PING_URL_BACKUP:-}" do_backup "${1:-manual}" ;;
+  restore) shift; reported "${HC_PING_URL_RESTORE:-}" do_restore "${1:-latest}" ;;
+  verify) reported "${HC_PING_URL_RESTORE_TEST:-}" do_verify ;;
   check) restic check ;;
   *) echo "Aufruf: factory-backup backup [tag] | restore <latest|YYYY-MM-DD[THH:MM]> | verify | check" >&2; exit 2 ;;
 esac

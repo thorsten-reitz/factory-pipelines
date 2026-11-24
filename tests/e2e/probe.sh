@@ -8,7 +8,7 @@ case "$1" in
     rm -rf "$DIR"; mkdir -p "$DIR"
     ( ok=0; fail=0
       while [ ! -f "$DIR/stop" ]; do
-        if curl -fsS -m 2 http://127.0.0.1:5101/readyz >/dev/null 2>&1; then ok=$((ok + 1)); else fail=$((fail + 1)); fi
+        if curl -fsS -m 2 "${PROBE_URL:-http://127.0.0.1:5101}/readyz" >/dev/null 2>&1; then ok=$((ok + 1)); else fail=$((fail + 1)); fi
         echo "$ok $fail" > "$DIR/count"
         sleep 0.1
       done ) &

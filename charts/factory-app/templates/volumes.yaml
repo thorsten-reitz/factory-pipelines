@@ -1,0 +1,17 @@
+{{- range .Values.volumes }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .name }}
+  labels: {{- include "factory.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+    # Zustand: nie automatisch löschen, auch nicht beim Entfernen der App
+    argocd.argoproj.io/sync-options: Delete=false,Prune=false
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: {{ .size | default "5Gi" }}
+{{- end }}

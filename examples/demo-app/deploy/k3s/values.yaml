@@ -1,0 +1,18 @@
+# Projektspezifische Werte für das Chart factory-app (Stufe k3s). Alles andere setzt die Pipeline
+# aus .factory/delivery.json (Image, Commit, Domain, Datenbank, Volumes, Backup, Seed).
+app:
+  port: 3000
+  replicas: 1
+  resources:
+    requests: { cpu: 50m, memory: 96Mi }
+    limits: { memory: 256Mi }
+migrate:
+  command: ["node", "migrate.js"]
+seed:
+  command: ["node", "seed.js"]
+volumes:
+  - name: uploads
+    mountPath: /data/uploads
+    size: 1Gi
+postgres:
+  storage: 1Gi

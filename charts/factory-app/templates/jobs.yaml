@@ -1,0 +1,83 @@
+{{- /* Ablauf beim Sync (Argo-Wellen): -1 Backup vor dem Deploy, 0 Datenbank und Volumes, 1 Migrationen, 2 Seed, 3 App */}}
+{{- define "factory.jobPod" -}}
+restartPolicy: Never
+{{- include "factory.pullSecrets" .root | nindent 0 }}
+containers:
+  - name: {{ .name }}
+    image: {{ include "factory.image" .root }}
+    command: {{- toYaml .command | nindent 6 }}
+    envFrom:
+      - secretRef:
+          name: {{ .root.Values.secrets.name }}
+    {{- with .root.Values.volumes }}
+    volumeMounts:
+      {{- range . }}
+      - name: vol-{{ .name }}
+        mountPath: {{ .mountPath | default (printf "/data/%s" .name) }}
+      {{- end }}
+    {{- end }}
+{{- with .root.Values.volumes }}
+volumes:
+  {{- range . }}
+  - name: vol-{{ .name }}
+    persistentVolumeClaim:
+      claimName: {{ .name }}
+  {{- end }}
+{{- end }}
+{{- end }}
+
+{{- if and .Values.backup.enabled .Values.backup.preDeploy }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: backup-pre-deploy
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: backup
+          image: {{ .Values.backup.image }}
+          args: ["backup", "pre-deploy"]
+          env: {{- include "factory.backupEnv" . | nindent 12 }}
+          volumeMounts: {{- include "factory.backupVolumeMounts" (dict "root" . "readOnly" true) | nindent 12 }}
+      volumes: {{- include "factory.backupVolumes" . | nindent 8 }}
+{{- end }}
+
+{{- with .Values.migrate.command }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  backoffLimit: 2
+  template:
+    spec: {{- include "factory.jobPod" (dict "root" $ "name" "migrate" "command" .) | nindent 6 }}
+{{- end }}
+
+{{- if and .Values.seed.enabled .Values.seed.command }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: seed
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  backoffLimit: 2
+  template:
+    spec: {{- include "factory.jobPod" (dict "root" $ "name" "seed" "command" .Values.seed.command) | nindent 6 }}
+{{- end }}

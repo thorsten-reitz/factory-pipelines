@@ -1,0 +1,5 @@
+apiVersion: v2
+name: factory-app
+description: Helm-Chart der Stufe k3s für Factory-Projekte. Argo CD lädt es aus factory-pipelines im selben Stand wie der Workflow.
+type: application
+version: 0.3.0

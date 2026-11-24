@@ -1,0 +1,75 @@
+{{- if .Values.restore.id }}
+{{- if not .Values.backup.enabled }}
+{{- fail "restore.id gesetzt, aber für diese App ist kein Backup konfiguriert" }}
+{{- end }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: factory-restore
+  labels: {{- include "factory.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: factory-restore
+  labels: {{- include "factory.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "deployments/scale"]
+    resourceNames: ["app"]
+    verbs: ["get", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: factory-restore
+  labels: {{- include "factory.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: factory-restore
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: factory-restore
+---
+# Läuft genau einmal pro Restore-Anfrage (id). Hält die App an, spielt den Zustand zurück, startet sie wieder.
+# Das Ergebnis meldet backup.sh an HC_PING_URL_RESTORE (falls gesetzt); ein Fehlschlag wird so zum Incident.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: restore-{{ .Values.restore.id }}
+  labels: {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: factory-restore
+      containers:
+        - name: restore
+          image: {{ .Values.backup.image }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -u
+              replicas=$(kubectl get deployment app -o jsonpath='{.spec.replicas}')
+              [ "${replicas:-0}" -gt 0 ] || replicas=1
+              echo "App anhalten (bisher $replicas Replikas)"
+              kubectl scale deployment app --replicas=0
+              kubectl wait --for=delete pod -l app.kubernetes.io/component=app --timeout=300s || true
+              if factory-backup restore "$SNAPSHOT"; then rc=0; else rc=1; fi
+              echo "App wieder starten"
+              kubectl scale deployment app --replicas="$replicas"
+              exit $rc
+          env:
+            - name: SNAPSHOT
+              value: {{ .Values.restore.snapshot | quote }}
+            {{- include "factory.backupEnv" . | nindent 12 }}
+          volumeMounts: {{- include "factory.backupVolumeMounts" (dict "root" . "readOnly" false) | nindent 12 }}
+      volumes: {{- include "factory.backupVolumes" . | nindent 8 }}
+{{- end }}
