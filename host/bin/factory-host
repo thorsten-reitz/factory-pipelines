@@ -223,7 +223,7 @@ kamal_activate() {
 # ---------- Aktionen ----------
 
 do_deploy() {
-  local rel old_cur old_prev domain port short
+  local rel old_cur old_prev domain port short activated
   mkdir -p "$APP/releases"
   short="${IMAGE##*@sha256:}"
   rel="$APP/releases/$(date -u +%Y%m%dT%H%M%SZ)-${short:0:12}"
@@ -272,20 +272,28 @@ do_deploy() {
 
   log "Umschalten auf $(basename "$rel") (Stufe $(tier_of "$rel"))"
   set_link "$APP/current" "$rel"
-  if activate "$rel" && wait_healthy "$rel"; then
-    [ -n "$old_cur" ] && [ "$old_cur" != "$rel" ] && set_link "$APP/previous" "$old_cur"
-    domain=$(json_get "$rel/delivery.json" ".environments[\"$ENVIRONMENT\"].domain")
-    if [ -n "$domain" ]; then as_root "$FACTORY_BIN/factory-site" "$NAME" "$domain" "$port" || log "Warnung: Caddy-Site für $domain nicht geschrieben"; fi
-    prune_releases
-    log "Deploy erfolgreich: $NAME läuft mit $IMAGE"
-    return 0
+  activated=0
+  if activate "$rel"; then
+    activated=1
+    if wait_healthy "$rel"; then
+      [ -n "$old_cur" ] && [ "$old_cur" != "$rel" ] && set_link "$APP/previous" "$old_cur"
+      domain=$(json_get "$rel/delivery.json" ".environments[\"$ENVIRONMENT\"].domain")
+      if [ -n "$domain" ]; then as_root "$FACTORY_BIN/factory-site" "$NAME" "$domain" "$port" || log "Warnung: Caddy-Site für $domain nicht geschrieben"; fi
+      prune_releases
+      log "Deploy erfolgreich: $NAME läuft mit $IMAGE"
+      return 0
+    fi
   fi
 
   touch "$rel/FAILED"
   if [ -n "$old_cur" ]; then
-    log "Rollback auf $(basename "$old_cur")"
     set_link "$APP/current" "$old_cur"
     [ -n "$old_prev" ] && set_link "$APP/previous" "$old_prev"
+    # Stufe kamal: hat der Proxy nicht umgeschaltet, läuft die bisherige Version unverändert weiter
+    if [ $activated -eq 0 ] && [ "$(tier_of "$rel")" = kamal ] && [ "$(tier_of "$old_cur")" = kamal ] && wait_healthy "$old_cur"; then
+      die "Deploy fehlgeschlagen, die bisherige Version lief ohne Unterbrechung weiter"
+    fi
+    log "Rollback auf $(basename "$old_cur")"
     if activate "$old_cur" && wait_healthy "$old_cur"; then
       die "Deploy fehlgeschlagen, Rollback auf die vorige Version erfolgreich"
     fi
