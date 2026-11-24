@@ -64,8 +64,8 @@ setup() {
   mkdir -p "$dir"
   printf 'wert1' > "$dir/EINS"
   printf 'zeile1\nzeile2\n' > "$dir/MEHRZEILIG"
-  printf 'x' > "$dir/ungültig-name"
-  run env SECRETS_PATH="$dir" sh "$ROOT/host/bin/with-secrets" sh -c 'printf "%s|%s|%s" "$EINS" "$MEHRZEILIG" "${ungültig:-leer}"'
+  printf 'x' > "$dir/UNGUELTIG-NAME"
+  run env SECRETS_PATH="$dir" sh "$ROOT/host/bin/with-secrets" sh -c 'printf "%s|%s|%s" "$EINS" "$MEHRZEILIG" "${UNGUELTIG:-leer}"'
   [ "$status" -eq 0 ]
   [ "$output" = "$(printf 'wert1|zeile1\nzeile2\n|leer')" ]
 }
