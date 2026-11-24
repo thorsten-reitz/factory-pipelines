@@ -38,9 +38,14 @@ pg_path() { echo "/postgres/$1.dump"; }
 
 ensure_repo() {
   log "Prüfe restic-Repository $(printf '%s' "$RESTIC_REPOSITORY" | sed -E 's#//[^@/]*@#//#')"
-  restic cat config >/dev/null 2>&1 && return 0
-  log "restic-Repository anlegen: $RESTIC_REPOSITORY"
-  restic init >/dev/null
+  # restic wiederholt vermeintlich vorübergehende Fehler bis zu 15 Minuten ohne Ausgabe: deshalb ein Zeitlimit
+  if out=$(timeout 120 restic cat config 2>&1 >/dev/null); then return 0; fi
+  case "$out" in
+    *"does not exist"*|*"unable to open config file"*|*NoSuchKey*|*"key does not exist"*) ;;
+    *) log "restic erreicht das Repository nicht: $(printf '%s' "$out" | tail -5)"; die "Backup-Ziel nicht erreichbar" ;;
+  esac
+  log "restic-Repository anlegen"
+  timeout 300 restic init >/dev/null || die "restic-Repository konnte nicht angelegt werden"
 }
 
 # Snapshot-ID für einen Pfad: neuester Stand, optional bis zu einem Zeitpunkt
